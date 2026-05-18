@@ -17,12 +17,17 @@ MOCK_COMPANIES: list[CompanyData] = [
     CompanyData(
         company_id="COMP001",
         company_name="셀트리온바이오",
+        ticker_code="068270",
+        industry_category="바이오시밀러 및 제약",
+        market_cap=320000.0,  # 32조원
         financial=FinancialData(
             current_ratio=2.5,
             debt_ratio=38.0,
             operating_cash_flow=850.0,
             cash_assets=1200.0,
             cash_runway_months=36.0,
+            operating_profit_margin=35.5,
+            rd_expense_ratio=15.0,
         ),
         news=[
             NewsItem(title="셀트리온바이오, FDA 품목허가 획득", date="2025-12-01",
@@ -46,12 +51,17 @@ MOCK_COMPANIES: list[CompanyData] = [
     CompanyData(
         company_id="COMP002",
         company_name="한미바이오텍",
+        ticker_code="128940",
+        industry_category="신약 개발 및 제약",
+        market_cap=35000.0,  # 3.5조원
         financial=FinancialData(
             current_ratio=1.8,
             debt_ratio=52.0,
             operating_cash_flow=420.0,
             cash_assets=580.0,
             cash_runway_months=24.0,
+            operating_profit_margin=12.0,
+            rd_expense_ratio=18.5,
         ),
         news=[
             NewsItem(title="한미바이오텍 특허 취득 완료", date="2025-11-10",
@@ -69,18 +79,21 @@ MOCK_COMPANIES: list[CompanyData] = [
         disclosure=DisclosureData(risk_keywords=[]),
     ),
 
-    # 3. C등급 HITL 기업 (목표 점수 55~70 → ~57)
-    # financial=67, news=47(특허취득+임상지연), bio=50, disc=MEDIUM(60)
-    # score = 0.4*67 + 0.25*47 + 0.25*50 + 0.1*60 = 26.8+11.75+12.5+6 = 57.05
+    # 3. C등급 HITL 기업
     CompanyData(
         company_id="COMP003",
         company_name="메디파마솔루션",
+        ticker_code="206650",
+        industry_category="세포치료제 개발",
+        market_cap=8500.0,  # 8500억원
         financial=FinancialData(
             current_ratio=1.6,
             debt_ratio=60.0,
             operating_cash_flow=130.0,
             cash_assets=250.0,
             cash_runway_months=18.0,
+            operating_profit_margin=-5.2,
+            rd_expense_ratio=30.0,
         ),
         news=[
             NewsItem(title="메디파마솔루션 특허 취득 완료", date="2025-10-10",
@@ -98,18 +111,21 @@ MOCK_COMPANIES: list[CompanyData] = [
         disclosure=DisclosureData(risk_keywords=["유상증자 반복"]),
     ),
 
-    # 4. D등급 부결 기업 (목표 점수 40~55 → ~42)
-    # financial=54, news=35(임상실패), bio=23, disc=MEDIUM(60)
-    # score = 0.4*54 + 0.25*35 + 0.25*23 + 0.1*60 = 21.6+8.75+5.75+6 = 42.1
+    # 4. D등급 부결 기업
     CompanyData(
         company_id="COMP004",
         company_name="이노바이오케어",
+        ticker_code="086890",
+        industry_category="유전자 치료제 개발",
+        market_cap=3200.0,  # 3200억원
         financial=FinancialData(
             current_ratio=1.1,
             debt_ratio=70.0,
             operating_cash_flow=20.0,
             cash_assets=150.0,
             cash_runway_months=12.0,
+            operating_profit_margin=-25.0,
+            rd_expense_ratio=45.0,
         ),
         news=[
             NewsItem(title="이노바이오케어 임상 실패", date="2025-10-15",
@@ -129,12 +145,17 @@ MOCK_COMPANIES: list[CompanyData] = [
     CompanyData(
         company_id="COMP005",
         company_name="파마리스크코리아",
+        ticker_code="950130",
+        industry_category="줄기세포 치료제",
+        market_cap=450.0,  # 450억원
         financial=FinancialData(
             current_ratio=0.6,
             debt_ratio=145.0,
             operating_cash_flow=-380.0,
             cash_assets=40.0,
             cash_runway_months=4.0,
+            operating_profit_margin=-120.0,
+            rd_expense_ratio=5.0,
         ),
         news=[
             NewsItem(title="파마리스크코리아 횡령 혐의 임원 구속", date="2025-12-01",
@@ -158,12 +179,17 @@ MOCK_COMPANIES: list[CompanyData] = [
     CompanyData(
         company_id="COMP006",
         company_name="뉴로바이오시스",
+        ticker_code="298040",
+        industry_category="뇌질환 치료제 개발",
+        market_cap=4200.0,  # 4200억원
         financial=FinancialData(
             current_ratio=0.95,
             debt_ratio=82.0,
             operating_cash_flow=-45.0,
             cash_assets=95.0,
             cash_runway_months=10.0,
+            operating_profit_margin=-45.0,
+            rd_expense_ratio=55.0,
         ),
         news=[
             NewsItem(title="뉴로바이오시스, FDA 승인 획득", date="2025-12-05",
@@ -187,12 +213,17 @@ MOCK_COMPANIES: list[CompanyData] = [
     CompanyData(
         company_id="COMP007",
         company_name="제넥신알파",
+        ticker_code="095700",
+        industry_category="면역 항암제 개발",
+        market_cap=9500.0,  # 9500억원
         financial=FinancialData(
             current_ratio=2.2,
             debt_ratio=35.0,
             operating_cash_flow=620.0,
             cash_assets=980.0,
             cash_runway_months=30.0,
+            operating_profit_margin=15.0,
+            rd_expense_ratio=22.0,
         ),
         news=None,
         bio_domain=BioDomainData(

@@ -17,20 +17,34 @@ class PlannerAgent:
 
     def run(self, state: BioAgentState) -> BioAgentState:
         company = state.company_data
-        logger.info("[PlannerAgent] 기업 분석 시작: %s (%s)", company.company_name, company.company_id)
+        logger.info(
+            "[PlannerAgent] 기업 분석 시작: %s (%s) [종목코드: %s | 분류: %s | 시총: %s억원]",
+            company.company_name,
+            company.company_id,
+            company.ticker_code,
+            company.industry_category,
+            f"{company.market_cap:,.0f}" if company.market_cap else "미등록",
+        )
 
         missing: list[str] = []
         if company.news is None:
             missing.append("news_data")
         if not company.financial:
             missing.append("financial_data")
+        else:
+            # 신규 재무 필드 체크
+            if company.financial.operating_profit_margin is None:
+                missing.append("operating_profit_margin")
+            if company.financial.rd_expense_ratio is None:
+                missing.append("rd_expense_ratio")
+
         if not company.bio_domain:
             missing.append("bio_domain_data")
         if not company.disclosure:
             missing.append("disclosure_data")
 
         if missing:
-            logger.warning("[PlannerAgent] 누락 데이터: %s", missing)
+            logger.warning("[PlannerAgent] 누락 데이터 항목 감지: %s", missing)
             state.errors.append(f"PlannerAgent: 누락 데이터 항목 - {missing}")
 
         logger.info(
