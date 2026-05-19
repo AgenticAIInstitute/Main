@@ -95,9 +95,13 @@ class RiskScoreResult(BaseModel):
 
 
 class SupervisoryResult(BaseModel):
-    special_case: bool
+    special_case:        bool
     special_case_reason: str
-    flags: list[str]
+    flags:               list[str]
+    original_grade:      Optional[str] = None
+    adjusted_grade:      Optional[str] = None
+    llm_called:          bool = False
+    is_error:            bool = False
 
 
 class LoanDecisionResult(BaseModel):
@@ -132,3 +136,8 @@ class BioAgentState(BaseModel):
     loan_decision_result: Optional[LoanDecisionResult] = None
     report: Optional[CompanyReport] = None
     errors: list[str] = []
+
+    # 흐름 제어 필드
+    restart_required:   bool = False
+    restart_count:      int  = 0
+    needs_human_review: bool = False
