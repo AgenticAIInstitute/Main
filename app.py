@@ -252,7 +252,20 @@ GRADE_COLOR = {
 @app.get("/", response_class=HTMLResponse)
 async def main_page() -> HTMLResponse:
     rows = ""
+    visible_reports = []
+    hidden_count = 0
+    
     for r in _REPORTS.values():
+        if r.grade.value in ["D", "E"]:
+            hidden_count += 1
+            continue
+        visible_reports.append(r)
+        
+        comp = COMPANIES_BY_ID.get(r.company_id)
+        ticker = comp.ticker_code if comp else "N/A"
+        industry = comp.industry_category if comp else "N/A"
+        mcap = f"{comp.market_cap:,.0f}억" if comp and comp.market_cap else "N/A"
+
         news_str = f"{r.news_score:.1f}" if r.news_score is not None else "<em>없음</em>"
         dec_color = DECISION_COLOR.get(r.final_decision.value, "#555")
         dec_label = DECISION_LABEL.get(r.final_decision.value, r.final_decision.value)
@@ -265,7 +278,10 @@ async def main_page() -> HTMLResponse:
         rows += f"""
         <tr>
           <td><strong>{r.company_name}</strong></td>
-          <td class="num">{r.final_score:.1f}</td>
+          <td><span style="color:#718096;font-family:monospace;font-size:0.8rem">{ticker}</span></td>
+          <td><span style="color:#4a5568;font-size:0.82rem">{industry}</span></td>
+          <td class="num" style="color:#4a5568;font-size:0.82rem">{mcap}</td>
+          <td class="num"><strong>{r.final_score:.1f}</strong></td>
           <td><span class="grade" style="background:{grade_color}">{r.grade.value}</span></td>
           <td class="num">{r.financial_score:.1f}</td>
           <td class="num">{news_str}</td>
@@ -289,7 +305,7 @@ async def main_page() -> HTMLResponse:
             color: white; padding: 24px 40px; }}
   header h1 {{ font-size: 1.8rem; font-weight: 700; }}
   header p  {{ font-size: 0.9rem; opacity: 0.85; margin-top: 4px; }}
-  .container {{ max-width: 1300px; margin: 30px auto; padding: 0 20px; }}
+  .container {{ max-width: 1350px; margin: 30px auto; padding: 0 20px; }}
   .card {{ background: white; border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,.08);
            overflow: hidden; }}
   .card-header {{ padding: 20px 28px; border-bottom: 1px solid #e2e8f0;
@@ -318,31 +334,35 @@ async def main_page() -> HTMLResponse:
                  border-radius: 6px; padding: 5px 12px; font-size: 0.8rem;
                  white-space: nowrap; transition: background .2s; }}
   .btn-detail:hover {{ background: #1a4e8a; }}
-  .legend {{ margin-top: 20px; display: flex; flex-wrap: wrap; gap: 12px; padding: 0 4px; }}
+  .legend {{ margin-top: 20px; display: flex; flex-direction: column; gap: 10px; padding: 0 4px; }}
+  .legend-row {{ display: flex; flex-wrap: wrap; gap: 12px; }}
   .legend-item {{ font-size: 0.8rem; color: #718096; }}
   .legend-item strong {{ color: #4a5568; }}
+  .warning-banner {{ background: #fdf2f2; border-left: 4px solid #f05252; color: #9b1c1c; 
+                     padding: 12px 16px; border-radius: 6px; font-size: 0.82rem; font-weight: 500;
+                     margin-top: 10px; }}
   footer {{ text-align: center; padding: 24px; color: #a0aec0; font-size: 0.8rem; }}
 </style>
 </head>
 <body>
 <header>
   <h1>BioCredit Agent</h1>
-  <p>코스닥 바이오·제약 기업 여신 심사 AI 대시보드</p>
+  <p>코스닥 바이오·제약 기업 여신 심사 AI 대시보드 (1차 MVP)</p>
 </header>
 <div class="container">
   <div class="card">
     <div class="card-header">
-      <h2>기업 심사 결과 ({len(_REPORTS)}개사)</h2>
+      <h2>기업 심사 결과 (A~C등급 대상, {len(visible_reports)}개사 노출)</h2>
       <div class="stats">
-        <span class="stat">승인 {sum(1 for r in _REPORTS.values() if r.final_decision.value == "APPROVED")}건</span>
-        <span class="stat" style="background:#fff3cd;color:#856404">검토 {sum(1 for r in _REPORTS.values() if r.final_decision.value == "HUMAN_IN_THE_LOOP")}건</span>
-        <span class="stat" style="background:#f8d7da;color:#842029">부결 {sum(1 for r in _REPORTS.values() if r.final_decision.value == "REJECTED")}건</span>
+        <span class="stat">승인 {sum(1 for r in visible_reports if r.final_decision.value == "APPROVED")}건</span>
+        <span class="stat" style="background:#fff3cd;color:#856404">검토 {sum(1 for r in visible_reports if r.final_decision.value == "HUMAN_IN_THE_LOOP")}건</span>
       </div>
     </div>
     <table>
       <thead>
         <tr>
-          <th>기업명</th><th style="text-align:right">최종점수</th><th>등급</th>
+          <th>기업명</th><th>종목코드</th><th>산업 분류</th><th style="text-align:right">시가총액</th>
+          <th style="text-align:right">최종점수</th><th>등급</th>
           <th style="text-align:right">재무점수</th><th style="text-align:right">뉴스점수</th>
           <th style="text-align:right">바이오점수</th><th>공시리스크</th>
           <th>특이사항</th><th>최종판단</th><th>상세</th>
@@ -351,10 +371,15 @@ async def main_page() -> HTMLResponse:
       <tbody>{rows}</tbody>
     </table>
   </div>
+  
+  {f'<div class="warning-banner">⚠️ 여신 심사 지침에 의거, 대출 비추천 및 불가 대상인 D·E 등급 기업({hidden_count}개사)은 메인 대시보드 화면에서 자동으로 필터링 및 제외되었습니다.</div>' if hidden_count > 0 else ''}
+
   <div class="legend">
-    <span class="legend-item"><strong>등급 기준:</strong> A≥85 · B≥70 · C≥55 · D≥40 · E&lt;40</span>
-    <span class="legend-item"><strong>가중치:</strong> 재무40% · 뉴스25% · 바이오25% · 공시10%</span>
-    <span class="legend-item"><strong>판단:</strong> A·B→승인 · C→전문가검토 · D·E→부결 · 특이사항→전문가검토</span>
+    <div class="legend-row">
+      <span class="legend-item"><strong>등급 기준:</strong> A≥85 · B≥70 · C≥55 · D≥40 · E&lt;40</span>
+      <span class="legend-item"><strong>가중치:</strong> 재무40% · 뉴스25% · 바이오25% · 공시10%</span>
+      <span class="legend-item"><strong>판단:</strong> A·B→승인 · C→전문가검토 · D·E→부결 · 특이사항→전문가검토</span>
+    </div>
   </div>
 </div>
 <footer>BioCredit Agent v1.0 · LangGraph + Gemini AI · FastAPI</footer>
@@ -368,6 +393,13 @@ async def company_detail(company_id: str) -> HTMLResponse:
     r = _REPORTS.get(company_id)
     if not r:
         raise HTTPException(status_code=404, detail=f"기업 ID '{company_id}'를 찾을 수 없습니다.")
+
+    comp = COMPANIES_BY_ID.get(company_id)
+    ticker = comp.ticker_code if comp else "N/A"
+    industry = comp.industry_category if comp else "N/A"
+    mcap = f"{comp.market_cap:,.0f}억원" if comp and comp.market_cap else "N/A"
+    opm = f"{comp.financial.operating_profit_margin:.1f}%" if comp else "N/A"
+    rd = f"{comp.financial.rd_expense_ratio:.1f}%" if comp else "N/A"
 
     news_str = f"{r.news_score:.1f}점" if r.news_score is not None else "데이터 없음 (판단 불확실)"
     dec_color = DECISION_COLOR.get(r.final_decision.value, "#555")
@@ -394,6 +426,10 @@ async def company_detail(company_id: str) -> HTMLResponse:
            padding: 28px; }}
   .card h2 {{ font-size: 1.05rem; color: #4a5568; margin-bottom: 18px;
               padding-bottom: 10px; border-bottom: 2px solid #e2e8f0; }}
+  .info-table {{ width: 100%; border-collapse: collapse; margin-bottom: 10px; }}
+  .info-table td {{ padding: 8px 12px; font-size: 0.88rem; border-bottom: 1px solid #edf2f7; }}
+  .info-table td.label {{ color: #718096; font-weight: 600; width: 140px; }}
+  .info-table td.value {{ color: #2d3748; font-weight: 500; }}
   .summary-grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
                    gap: 16px; }}
   .metric {{ background: #f7fafc; border-radius: 10px; padding: 16px; text-align: center; }}
@@ -425,6 +461,31 @@ async def company_detail(company_id: str) -> HTMLResponse:
   </div>
 </header>
 <div class="container">
+  <!-- 기업 기본 정보 카드 -->
+  <div class="card">
+    <h2>기업 기본 정보</h2>
+    <table class="info-table">
+      <tr>
+        <td class="label">기업명</td>
+        <td class="value">{r.company_name}</td>
+        <td class="label">종목코드</td>
+        <td class="value" style="font-family:monospace;font-weight:600">{ticker}</td>
+      </tr>
+      <tr>
+        <td class="label">산업 분류</td>
+        <td class="value">{industry}</td>
+        <td class="label">시가총액</td>
+        <td class="value">{mcap}</td>
+      </tr>
+      <tr>
+        <td class="label">영업이익률</td>
+        <td class="value" style="color: {'#e53e3e' if '-' in opm else '#2b6cb0'}">{opm}</td>
+        <td class="label">R&D 비용 비중</td>
+        <td class="value" style="color:#2ecc71">{rd}</td>
+      </tr>
+    </table>
+  </div>
+
   <div class="card">
     <h2>심사 결과 요약</h2>
     <div class="summary-grid">
@@ -440,7 +501,7 @@ async def company_detail(company_id: str) -> HTMLResponse:
       <div class="metric">
         <div class="label">재무 점수</div>
         <div class="value">{r.financial_score:.1f}</div>
-        <div class="sub">가중치 40%</div>
+        <div class="sub">영업이익률: {opm}<br>R&D 비중: {rd}</div>
       </div>
       <div class="metric">
         <div class="label">뉴스 점수</div>

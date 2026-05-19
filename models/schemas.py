@@ -30,6 +30,8 @@ class FinancialData(BaseModel):
     operating_cash_flow: float
     cash_assets: float
     cash_runway_months: float
+    operating_profit_margin: float  # 영업이익률 (%)
+    rd_expense_ratio: float         # R&D 비용 비중 (%)
 
 
 class NewsItem(BaseModel):
@@ -53,6 +55,9 @@ class DisclosureData(BaseModel):
 class CompanyData(BaseModel):
     company_id: str
     company_name: str
+    ticker_code: str                 # 종목코드 (예: 091990)
+    industry_category: str           # 산업 분류 (예: 제약/바이오)
+    market_cap: float                # 시가총액 (억원 단위)
     financial: FinancialData
     news: Optional[list[NewsItem]]
     bio_domain: BioDomainData
