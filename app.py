@@ -76,10 +76,10 @@ def news_node(state: dict) -> dict:
     s = BioAgentState(**state)
     flat = {
         "company_name":      s.company_data.company_name,
-        "naver_client_id":   os.environ.get("NAVER_CLIENT_ID", ""),
-        "naver_client_secret": os.environ.get("NAVER_CLIENT_SECRET", ""),
+        "naver_client_id":   os.environ.get("NAVER_NEWS_API_Client_ID", "").strip(),
+        "naver_client_secret": os.environ.get("NAVER_NEWS_API_Client_Secret", "").strip(),
         "gemini_api_key":    os.environ.get("GEMINI_API_KEY", "") or os.environ.get("GOOGLE_API_KEY", ""),
-        "gemini_model":      os.environ.get("GEMINI_MODEL", "gemini-1.5-flash"),
+        "gemini_model":      os.environ.get("GEMINI_MODEL", "gemini-2.0-flash"),
         "errors":            list(s.errors),
     }
     result = _news_node_fn(flat)
@@ -117,7 +117,7 @@ def supervisory_node(state: dict) -> dict:
     flat = {
         "company_name":   s.company_data.company_name,
         "gemini_api_key": os.environ.get("GEMINI_API_KEY", "") or os.environ.get("GOOGLE_API_KEY", ""),
-        "gemini_model":   os.environ.get("GEMINI_MODEL", "gemini-1.5-flash"),
+        "gemini_model":   os.environ.get("GEMINI_MODEL", "gemini-2.0-flash"),
         "loan_grade":     s.risk_score_result.grade.value if s.risk_score_result else "",
         "financial_score":  s.financial_result.financial_score if s.financial_result else None,
         "news_score":       s.news_result.news_score if s.news_result else None,

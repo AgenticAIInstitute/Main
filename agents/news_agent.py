@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 from datetime import datetime
 from email.utils import parsedate_to_datetime
 from typing import Dict, List, Optional, Tuple
@@ -143,7 +144,7 @@ def _keyword_score(
         hits       : 키워드 히트 총 횟수
         detail     : 히트된 키워드 목록
     """
-    score = 70.0
+    score = 55.0
     hits  = 0
     detail: Dict = {
         "neg_high":  [],
@@ -229,6 +230,7 @@ def _llm_score(
             model=gemini_model,
             google_api_key=gemini_api_key,
             temperature=0.1,
+          
         )
         result  = llm.invoke(prompt)
         content = result.content.strip()
@@ -286,7 +288,7 @@ def calculate_news_score(
     articles: List[Dict],
     company_name: str,
     gemini_api_key: str = "",
-    gemini_model: str   = "gemini-1.5-flash",
+    gemini_model: str   = "gemini-2.0-flash",
 ) -> Tuple[float, Dict, str]:
     """
     전체 뉴스 점수 계산 파이프라인.
@@ -328,10 +330,10 @@ def calculate_news_score(
 def news_node(state: dict) -> dict:
     """LangGraph 노드 — State에서 읽고 결과를 State에 저장."""
     company_name    = state["company_name"]
-    naver_id        = state.get("naver_client_id", "")
-    naver_secret    = state.get("naver_client_secret", "")
-    gemini_api_key  = state.get("gemini_api_key", "")
-    gemini_model    = state.get("gemini_model", "gemini-1.5-flash")
+    naver_id        = state.get("naver_client_id", "") or os.environ.get("NAVER_NEWS_API_Client_ID", "").strip()
+    naver_secret    = state.get("naver_client_secret", "") or os.environ.get("NAVER_NEWS_API_Client_Secret", "").strip()
+    gemini_api_key  = state.get("gemini_api_key", "") or os.environ.get("GEMINI_API_KEY", "") or os.environ.get("GOOGLE_API_KEY", "")
+    gemini_model    = state.get("gemini_model", "") or os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
     errors          = list(state.get("errors", []))
 
     logger.info("[News] %s 분석 시작", company_name)

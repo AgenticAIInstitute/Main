@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -185,6 +186,7 @@ def _llm_judge(
             model=gemini_model,
             google_api_key=gemini_api_key,
             temperature=0.1,
+           
         )
         result  = llm.invoke(prompt)
         content = result.content.strip()
@@ -301,8 +303,8 @@ def _needs_human_review(
 def supervisory_review_node(state: dict) -> dict:
     """LangGraph 노드 — B/C 등급만 처리하고 나머지는 패스."""
     current_grade  = state.get("loan_grade", "")
-    gemini_api_key = state.get("gemini_api_key", "")
-    gemini_model   = state.get("gemini_model", "gemini-1.5-flash")
+    gemini_api_key = state.get("gemini_api_key", "") or os.environ.get("GEMINI_API_KEY", "") or os.environ.get("GOOGLE_API_KEY", "")
+    gemini_model   = state.get("gemini_model", "") or os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
     company_name   = state.get("company_name", "")
     errors         = list(state.get("errors", []))
 
