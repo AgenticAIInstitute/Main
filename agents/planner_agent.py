@@ -1,6 +1,7 @@
 from __future__ import annotations
 import logging
-from models.schemas import BioAgentState
+from typing import Any
+from models.schemas import BioAgentState, CompanyData
 
 logger = logging.getLogger(__name__)
 
@@ -14,6 +15,18 @@ class PlannerAgent:
         "bio_domain_data",
         "disclosure_data",
     ]
+
+    def get_companies(self) -> list[CompanyData]:
+        """분석 대상 기업 리스트를 반환한다 (Agent 1이 정의하고 관리)."""
+        from data.mock_companies import MOCK_COMPANIES
+        return MOCK_COMPANIES
+
+    def get_companies_by_id(self) -> dict[str, CompanyData]:
+        """분석 대상 기업 ID 매핑을 반환한다."""
+        from data.mock_companies import COMPANIES_BY_ID
+        return COMPANIES_BY_ID
+
+
 
     def run(self, state: BioAgentState) -> BioAgentState:
         company = state.company_data
@@ -46,6 +59,23 @@ class PlannerAgent:
         if missing:
             logger.warning("[PlannerAgent] 누락 데이터 항목 감지: %s", missing)
             state.errors.append(f"PlannerAgent: 누락 데이터 항목 - {missing}")
+
+        # 🌟 바이오 도메인 기반 맞춤형 분석 지시서(Directives) 동적 발행
+        directives: list[str] = []
+        if company.bio_domain:
+            if company.bio_domain.clinical_stage in ["Phase 2", "Phase 3"]:
+                directives.append(f"후기 임상({company.bio_domain.clinical_stage}) R&D 투자 버퍼 및 기술적 타당성 검증 계획 수립")
+            if company.bio_domain.has_tech_export:
+                directives.append("기술 수출(Tech Export) 이력에 따른 비재무 기술성 가점 심사 지시")
+            if company.bio_domain.pipeline_count >= 5:
+                directives.append(f"다중 파이프라인({company.bio_domain.pipeline_count}개) 보유에 따른 핵심 파이프라인 집중 위험 상쇄 평가")
+
+        if directives:
+            logger.info(
+                "[PlannerAgent] 🌟 %s 맞춤형 여신 분석 지침 수립: %s",
+                company.company_name,
+                directives,
+            )
 
         logger.info(
             "[PlannerAgent] 분석 계획 완료 | 필수항목=%s | 누락=%s",

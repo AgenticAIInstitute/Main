@@ -20,7 +20,6 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from langgraph.graph import StateGraph, END
 
 from models.schemas import BioAgentState, CompanyReport
-from data.mock_companies import MOCK_COMPANIES, COMPANIES_BY_ID
 from agents import (
     PlannerAgent, FinancialAgent, NewsAgent, BioDomainAgent,
     DisclosureAgent, RiskScoringAgent, SupervisoryReviewAgent,
@@ -30,11 +29,9 @@ from agents import (
 logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
 logger = logging.getLogger(__name__)
 
-# ──────────────────────────────────────────────
-# LangGraph 워크플로우 구성
-# ──────────────────────────────────────────────
-
 _planner = PlannerAgent()
+MOCK_COMPANIES = _planner.get_companies()
+COMPANIES_BY_ID = _planner.get_companies_by_id()
 _financial = FinancialAgent()
 _news = NewsAgent()
 _bio = BioDomainAgent()
