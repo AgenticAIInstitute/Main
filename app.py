@@ -203,6 +203,14 @@ def analyze_company(company_data: Any) -> CompanyReport:
     result = BioAgentState(**final_state)
     if result.report is None:
         raise RuntimeError(f"분석 실패: {company_data.company_id}")
+    
+    # 🌟 대시보드 화면상 데이터와 AI 리포트/점수 분석 결과 간의 모순을 방지하기 위해,
+    # 파이프라인 내부(DART 실시간 수집 등)에서 업데이트된 재무/도메인 필드들을 전역 원본 객체에 백포팅(동기화)합니다.
+    company_data.financial = result.company_data.financial
+    company_data.news = result.company_data.news
+    company_data.bio_domain = result.company_data.bio_domain
+    company_data.disclosure = result.company_data.disclosure
+
     return result.report
 
 
