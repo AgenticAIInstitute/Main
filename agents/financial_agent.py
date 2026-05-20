@@ -19,49 +19,8 @@ class FinancialAgent:
         clinical_stage = state.company_data.bio_domain.clinical_stage
         risk_factors: list[str] = []
 
-        # 원본 재무 데이터 복사본 생성
+        # 원본 재무 데이터 복사본 생성 (이미 PlannerAgent가 실시간 DART 데이터를 반영하여 채워둠)
         fd = copy.deepcopy(state.company_data.financial)
-
-        # Open DART 실시간 재무 데이터 수집 및 연동 시도
-        dart = get_dart_client()
-        if ticker_code and dart.is_available():
-            try:
-                live_fin = dart.fetch_financials(ticker_code)
-                if live_fin:
-                    logger.info(
-                        "[FinancialAgent] %s (%s) DART 실시간 재무 수집 성공: %s",
-                        company_name,
-                        ticker_code,
-                        live_fin,
-                    )
-                    
-                    # 1. 유동비율 계산 (유동자산 / 유동부채)
-                    ca = live_fin.get("current_assets", 0.0)
-                    cl = live_fin.get("current_liabilities", 0.0)
-                    if cl > 0:
-                        fd.current_ratio = round(ca / cl, 2)
-                    
-                    # 2. 부채비율 계산 (부채총계 / 자본총계 * 100)
-                    tl = live_fin.get("total_liabilities", 0.0)
-                    te = live_fin.get("total_equity", 0.0)
-                    if te > 0:
-                        fd.debt_ratio = round((tl / te) * 100.0, 2)
-
-                    # 3. 영업이익률 계산 (영업이익 / 매출액 * 100)
-                    oi = live_fin.get("operating_income", 0.0)
-                    rev = live_fin.get("revenue", 0.0)
-                    if rev > 0:
-                        fd.operating_profit_margin = round((oi / rev) * 100.0, 2)
-
-                    logger.info(
-                        "[FinancialAgent] %s 실시간 지표 연산 적용 -> 유동비율: %.2f, 부채비율: %.2f%%, 영업이익률: %.2f%%",
-                        company_name,
-                        fd.current_ratio,
-                        fd.debt_ratio,
-                        fd.operating_profit_margin,
-                    )
-            except Exception as e:
-                logger.warning("[FinancialAgent] DART 실시간 재무 수집 실패로 모의 데이터 유지: %s", e)
 
         # 1. 유동비율 (current_ratio) - 20점 만점
 

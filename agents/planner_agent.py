@@ -26,19 +26,55 @@ class PlannerAgent:
         from data.mock_companies import COMPANIES_BY_ID
         return COMPANIES_BY_ID
 
-
-
     def run(self, state: BioAgentState) -> BioAgentState:
         company = state.company_data
+        company_name = company.company_name
+        ticker_code = company.ticker_code
+
         logger.info(
             "[PlannerAgent] 기업 분석 시작: %s (%s) [종목코드: %s | 분류: %s | 시총: %s억원]",
-            company.company_name,
+            company_name,
             company.company_id,
-            company.ticker_code,
+            ticker_code,
             company.industry_category,
             f"{company.market_cap:,.0f}" if company.market_cap else "미등록",
         )
 
+        # 🌟 Open DART 실시간 재무 데이터 수집 및 연동 시도 (결측치 검사 전 실행)
+        from services.dart_client import get_dart_client
+        dart = get_dart_client()
+        if ticker_code and dart.is_available():
+            try:
+                live_fin = dart.fetch_financials(ticker_code)
+                if live_fin:
+                    logger.info(
+                        "[PlannerAgent] %s (%s) DART 실시간 재무 수집 성공: %s",
+                        company_name,
+                        ticker_code,
+                        live_fin,
+                    )
+                    
+                    # 1. 유동비율 계산 (유동자산 / 유동부채)
+                    ca = live_fin.get("current_assets", 0.0)
+                    cl = live_fin.get("current_liabilities", 0.0)
+                    if cl > 0:
+                        company.financial.current_ratio = round(ca / cl, 2)
+                    
+                    # 2. 부채비율 계산 (부채총계 / 자본총계 * 100)
+                    tl = live_fin.get("total_liabilities", 0.0)
+                    te = live_fin.get("total_equity", 0.0)
+                    if te > 0:
+                        company.financial.debt_ratio = round((tl / te) * 100.0, 2)
+
+                    # 3. 영업이익률 계산 (영업이익 / 매출액 * 100)
+                    oi = live_fin.get("operating_income", 0.0)
+                    rev = live_fin.get("revenue", 0.0)
+                    if rev > 0:
+                        company.financial.operating_profit_margin = round((oi / rev) * 100.0, 2)
+            except Exception as e:
+                logger.warning("[PlannerAgent] DART 실시간 재무 수집 실패로 baseline 모의 데이터 유지: %s", e)
+
+        # 이제 실제 채워진 데이터를 기준으로 결측치 검사 수행
         missing: list[str] = []
         if company.news is None:
             missing.append("news_data")
