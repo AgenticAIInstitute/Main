@@ -19,32 +19,51 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 from langgraph.graph import StateGraph, END
 
-from models.schemas import BioAgentState, CompanyReport
+from models.schemas import BioAgentState, CompanyReport, SupervisoryResult, GradeEnum, NewsResult
+from data.mock_companies import MOCK_COMPANIES, COMPANIES_BY_ID
 from agents import (
-    PlannerAgent, FinancialAgent, NewsAgent, BioDomainAgent,
-    DisclosureAgent, RiskScoringAgent, SupervisoryReviewAgent,
+    planner_node as _planner_node_fn, FinancialAgent, news_node as _news_node_fn,
+    BioDomainAgent, DisclosureAgent, RiskScoringAgent, supervisory_review_node,
     LoanDecisionAgent, ReportWriterAgent,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
 logger = logging.getLogger(__name__)
 
-_planner = PlannerAgent()
-MOCK_COMPANIES = _planner.get_companies()
-COMPANIES_BY_ID = _planner.get_companies_by_id()
+# ──────────────────────────────────────────────
+# LangGraph 워크플로우 구성
+# ──────────────────────────────────────────────
 _financial = FinancialAgent()
-_news = NewsAgent()
 _bio = BioDomainAgent()
 _disclosure = DisclosureAgent()
 _risk = RiskScoringAgent()
-_supervisory = SupervisoryReviewAgent()
 _loan = LoanDecisionAgent()
 _report = ReportWriterAgent()
 
 
 def planner_node(state: dict) -> dict:
     s = BioAgentState(**state)
-    return _planner.run(s).model_dump()
+    adapted = dict(state)
+    adapted["company_data"] = s.company_data
+    result = _planner_node_fn(adapted)
+
+    # 재시작이었으면 BioAgentState의 분석 결과 초기화
+    if state.get("restart_required", False):
+        s.financial_result = None
+        s.news_result = None
+        s.bio_domain_result = None
+        s.disclosure_result = None
+        s.risk_score_result = None
+        s.supervisory_result = None
+        s.loan_decision_result = None
+        s.report = None
+
+    # planner가 계산한 흐름 제어 필드 반영
+    s.restart_required  = result.get("restart_required") or False
+    s.restart_count     = result.get("restart_count") or s.restart_count
+    s.needs_human_review = result.get("needs_human_review") or False
+    s.errors = result.get("errors") or list(s.errors)
+    return s.model_dump()
 
 
 def financial_node(state: dict) -> dict:
@@ -54,7 +73,25 @@ def financial_node(state: dict) -> dict:
 
 def news_node(state: dict) -> dict:
     s = BioAgentState(**state)
-    return _news.run(s).model_dump()
+    flat = {
+        "company_name":      s.company_data.company_name,
+        "naver_client_id":   os.environ.get("NAVER_CLIENT_ID", ""),
+        "naver_client_secret": os.environ.get("NAVER_CLIENT_SECRET", ""),
+        "gemini_api_key":    os.environ.get("GEMINI_API_KEY", "") or os.environ.get("GOOGLE_API_KEY", ""),
+        "gemini_model":      os.environ.get("GEMINI_MODEL", "gemini-1.5-flash"),
+        "errors":            list(s.errors),
+    }
+    result = _news_node_fn(flat)
+    detail = result.get("news_detail", {})
+    s.news_result = NewsResult(
+        news_score=result.get("news_score"),
+        positive_keywords=detail.get("positives", []),
+        negative_keywords=detail.get("neg_high", []),
+        negative_critical_event=bool(detail.get("neg_high", [])),
+        missing_news=result.get("news_score") is None,
+    )
+    s.errors = result.get("errors", list(s.errors))
+    return s.model_dump()
 
 
 def bio_domain_node(state: dict) -> dict:
@@ -74,7 +111,42 @@ def risk_scoring_node(state: dict) -> dict:
 
 def supervisory_node(state: dict) -> dict:
     s = BioAgentState(**state)
-    return _supervisory.run(s).model_dump()
+    disc_score_map = {"LOW": 100.0, "MEDIUM": 60.0, "HIGH": 20.0}
+    disc_level = (s.disclosure_result.disclosure_risk_level.value if s.disclosure_result else "MEDIUM")
+    flat = {
+        "company_name":   s.company_data.company_name,
+        "gemini_api_key": os.environ.get("GEMINI_API_KEY", "") or os.environ.get("GOOGLE_API_KEY", ""),
+        "gemini_model":   os.environ.get("GEMINI_MODEL", "gemini-1.5-flash"),
+        "loan_grade":     s.risk_score_result.grade.value if s.risk_score_result else "",
+        "financial_score":  s.financial_result.financial_score if s.financial_result else None,
+        "news_score":       s.news_result.news_score if s.news_result else None,
+        "bio_score":        s.bio_domain_result.bio_score if s.bio_domain_result else None,
+        "disclosure_score": disc_score_map.get(disc_level, 60.0),
+        "news_detail": {"neg_high": s.news_result.negative_keywords if s.news_result else []},
+        "news_summary":  "",
+        "restart_count": s.restart_count,
+        "errors":        list(s.errors),
+    }
+    result = supervisory_review_node(flat)
+    s.restart_required  = result.get("restart_required", False)
+    s.restart_count     = result.get("restart_count", s.restart_count)
+    s.needs_human_review = result.get("needs_human_review", False)
+    s.errors = result.get("errors", list(s.errors))
+    sup = result.get("supervisory_result", {})
+    if sup:
+        s.supervisory_result = SupervisoryResult(
+            special_case=bool(sup.get("special_cases", [])),
+            special_case_reason=sup.get("reason", ""),
+            flags=sup.get("special_cases", []),
+            original_grade=sup.get("original_grade"),
+            adjusted_grade=sup.get("adjusted_grade"),
+            llm_called=sup.get("llm_called", False),
+            is_error=sup.get("is_error", False),
+        )
+    adjusted = result.get("loan_grade")
+    if adjusted and s.risk_score_result:
+        s.risk_score_result.grade = GradeEnum(adjusted)
+    return s.model_dump()
 
 
 def loan_decision_node(state: dict) -> dict:
@@ -85,6 +157,12 @@ def loan_decision_node(state: dict) -> dict:
 def report_writer_node(state: dict) -> dict:
     s = BioAgentState(**state)
     return _report.run(s).model_dump()
+
+
+def _route_after_supervisory(state: dict) -> str:
+    if state.get("restart_required", False):
+        return "planner"
+    return "loan_decision"
 
 
 def _build_graph() -> Any:
@@ -106,7 +184,11 @@ def _build_graph() -> Any:
     g.add_edge("bio_domain", "disclosure")
     g.add_edge("disclosure", "risk_scoring")
     g.add_edge("risk_scoring", "supervisory")
-    g.add_edge("supervisory", "loan_decision")
+    g.add_conditional_edges(
+        "supervisory",
+        _route_after_supervisory,
+        {"planner": "planner", "loan_decision": "loan_decision"},
+    )
     g.add_edge("loan_decision", "report_writer")
     g.add_edge("report_writer", END)
     return g.compile()
