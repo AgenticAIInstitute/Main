@@ -1,6 +1,7 @@
 from __future__ import annotations
 import logging
 from models.schemas import BioAgentState, FinancialResult
+from services.gemini_client import get_gemini_client
 
 logger = logging.getLogger(__name__)
 
@@ -99,32 +100,23 @@ class FinancialAgent:
         # 기본 재무 합산 점수 계산
         base_score = cr_score + dr_score + opm_score + ocf_score + ca_score + rd_score + runway_score
 
-        # 🌟 바이오 벤처 특화 우대/보정 로직 (Deficit-R&D Protection Heuristics)
-        # 임상 단계에 있으면서 적자 상태이지만, R&D 투자가 활발하고 현금 유동성 버퍼가 충분한 경우 가점 적용
-        has_protection = False
-        if fd.operating_profit_margin < 0 and clinical_stage in ["Phase 1", "Phase 2", "Phase 3", "Preclinical"]:
-            if fd.rd_expense_ratio >= 20.0 and fd.cash_runway_months >= 12:
-                has_protection = True
-                base_score += 5.0  # 기술성장성 보정 가점 부여
-                logger.info(
-                    "[FinancialAgent] %s | 기술 성장성 보정 가점 적용 (+5.0점) - R&D 비중: %.1f%%, Runway: %.1f개월",
-                    company_name, fd.rd_expense_ratio, fd.cash_runway_months
-                )
+        # 🌟 바이오 벤처 특화 우대/보정 로직 (Deficit-R&D Protection)
+        # 영업적자 상태임에도 R&D 비중이 높고 Cash Runway가 충분하면 가점 부여 (+5점)
+        if fd.operating_profit_margin < 0 and fd.rd_expense_ratio >= 20.0 and fd.cash_runway_months >= 12:
+            base_score += 5.0
+            risk_factors.append("적자임에도 높은 R&D 투자와 안정적 Runway 보유 (Deficit-R&D Protection 가점 적용)")
 
-        financial_score = max(0.0, min(100.0, base_score))
-
-        # 리스크 항목 요약 정리
-        if has_protection:
-            # 기술 우수 리스크 상쇄 표시
-            risk_factors.append("임상 단계 연구개발 진행에 따른 계획된 적자 (R&D 투자 양호)")
+        # 최종 점수를 0~100점 사이로 캡(Cap)을 씌웁니다.
+        final_score = max(0.0, min(100.0, base_score))
+        final_score = max(0.0, min(100.0, base_score))
 
         state.financial_result = FinancialResult(
-            financial_score=round(financial_score, 2),
+            financial_score=round(final_score, 2),
             risk_factors=risk_factors,
         )
 
         logger.info(
-            "[FinancialAgent] %s | score=%.1f | risks=%s | 가점적용=%s",
-            company_name, financial_score, risk_factors, has_protection
+            "[FinancialAgent] %s | score=%.1f | risks=%s",
+            company_name, final_score, risk_factors
         )
         return state

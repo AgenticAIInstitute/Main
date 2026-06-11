@@ -4,19 +4,16 @@
   1. 최초 실행 시 누락 데이터 확인 및 분석 계획 수립
   2. 재시작(restart_required: True) 시 이전 분석 결과를 초기화하고 재분석 준비
 
-재시작 시 초기화 항목:
-  - 분석 점수 (financial_score, news_score, bio_score, disclosure_score)
-  - 분석 상세 (news_detail, news_summary, news_data)
-  - 등급 (loan_grade, loan_decision)
-  - risk_score, supervisory_result
+재시작 시 초기화 항목 (BioAgentState 실제 필드명 기준):
+  - financial_result, news_result, bio_domain_result, disclosure_result
+  - risk_score_result, supervisory_result, loan_decision_result, report
+  - needs_human_review
   - restart_required (False로 리셋)
   - errors (재시작 이전 오류는 유지)
 
 절대 초기화하면 안 되는 항목:
-  - restart_count  : 재시작 횟수 카운터 (무한루프 방지)
-  - company_data   : 재분석에 필요한 입력값
-  - gemini_api_key : 재분석에 필요한 API 키
-  - gemini_model   : 재분석에 필요한 모델 설정
+  - restart_count   : 재시작 횟수 카운터 (무한루프 방지)
+  - company_data    : 재분석에 필요한 입력값
 """
 from __future__ import annotations
 
@@ -24,23 +21,17 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# 재시작 시 초기화할 State 키 목록
-# restart_count, company_data, API 키는 절대 포함하면 안 됨
+# 재시작 시 초기화할 State 키 목록 (BioAgentState 실제 필드명 사용)
+# restart_count, company_data 는 절대 포함하면 안 됨
 _RESET_KEYS = [
-    "financial_score",
-    "financial_detail",
-    "news_score",
-    "news_detail",
-    "news_summary",
-    "news_data",
-    "bio_score",
-    "bio_detail",
-    "disclosure_score",
-    "disclosure_detail",
-    "risk_score",
-    "loan_grade",
-    "loan_decision",
+    "financial_result",
+    "news_result",
+    "bio_domain_result",
+    "disclosure_result",
+    "risk_score_result",
     "supervisory_result",
+    "loan_decision_result",
+    "report",
     "needs_human_review",
 ]
 
@@ -89,7 +80,6 @@ def planner_node(state: dict) -> dict:
         logger.error("[Planner] company_data 없음")
         return {
             "restart_required":   False,
-            "restart_count":      0,
             "needs_human_review": False,
             "errors":             errors,
         }
@@ -104,6 +94,7 @@ def planner_node(state: dict) -> dict:
     if not company.disclosure:
         missing.append("disclosure_data")
 
+    # 들여쓰기 및 함수 내부 포함 구조 정상화 완료
     if missing:
         logger.warning("[Planner] %s — 누락 데이터: %s", company_name, missing)
         errors.append(f"PlannerAgent: 누락 데이터 항목 — {missing}")
@@ -115,7 +106,6 @@ def planner_node(state: dict) -> dict:
 
     return {
         "restart_required":   False,
-        "restart_count":      0,
         "needs_human_review": False,
         "errors":             errors,
     }
