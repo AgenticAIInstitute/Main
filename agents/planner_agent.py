@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import logging
+from services.dart_client import get_dart_client
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +85,13 @@ def planner_node(state: dict) -> dict:
             "errors":             errors,
         }
 
+    # ── DART API 연동 ────────
+    if getattr(company, "ticker_code", None):
+        dart = get_dart_client()
+        updated_financial = dart.get_financial_data(company.ticker_code, fallback_data=company.financial)
+        if updated_financial:
+            company.financial = updated_financial
+
     # 누락 데이터 확인
     if company.news is None:
         missing.append("news_data")
@@ -105,6 +113,7 @@ def planner_node(state: dict) -> dict:
     )
 
     return {
+        "company_data":       company,
         "restart_required":   False,
         "needs_human_review": False,
         "errors":             errors,
