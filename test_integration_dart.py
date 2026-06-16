@@ -1,4 +1,4 @@
-import sys; sys.stdout.reconfigure(encoding='utf-8')
+﻿import sys; sys.stdout.reconfigure(encoding='utf-8')
 import os
 import logging
 from pprint import pprint
@@ -10,7 +10,7 @@ from agents.planner_agent import planner_node
 import services.dart_client as dart_module
 import requests
 
-# stdout으로 로그가 잘 보이도록 기본 로거 세팅
+# stdout?쇰줈 濡쒓렇媛 ??蹂댁씠?꾨줉 湲곕낯 濡쒓굅 ?명똿
 logging.basicConfig(level=logging.INFO, stream=sys.stdout, format="%(message)s")
 
 class MockResponse:
@@ -29,25 +29,25 @@ def mock_requests_get_success(url, params=None):
     if "fnlttSinglAcnt" in url:
         return MockResponse({
             "status": "000",
-            "message": "정상",
+            "message": "?뺤긽",
             "list": [
-                {"account_nm": "유동자산", "thstrm_amount": "50000000000"}, # 500억
-                {"account_nm": "유동부채", "thstrm_amount": "25000000000"}, # 250억
-                {"account_nm": "부채총계", "thstrm_amount": "30000000000"}, # 300억
-                {"account_nm": "자본총계", "thstrm_amount": "70000000000"}, # 700억
-                {"account_nm": "매출액", "thstrm_amount": "100000000000"}, # 1000억
-                {"account_nm": "영업이익", "thstrm_amount": "15000000000"}  # 150억
+                {"account_nm": "?좊룞?먯궛", "thstrm_amount": "50000000000"}, # 500??
+                {"account_nm": "?좊룞遺梨?, "thstrm_amount": "25000000000"}, # 250??
+                {"account_nm": "遺梨꾩킑怨?, "thstrm_amount": "30000000000"}, # 300??
+                {"account_nm": "?먮낯珥앷퀎", "thstrm_amount": "70000000000"}, # 700??
+                {"account_nm": "留ㅼ텧??, "thstrm_amount": "100000000000"}, # 1000??
+                {"account_nm": "?곸뾽?댁씡", "thstrm_amount": "15000000000"}  # 150??
             ]
         })
     raise Exception("Unknown URL")
 
 def mock_requests_get_fail(url, params=None):
-    raise Exception("Connection Timeout (가상 금융감독원 서버 장애)")
+    raise Exception("Connection Timeout (媛??湲덉쑖媛먮룆???쒕쾭 ?μ븷)")
 
-# CompanyData 구조 모방
+# CompanyData 援ъ“ 紐⑤갑
 class MockCompanyData:
     def __init__(self, ticker_code="091990", financial=None):
-        self.company_name = "셀트리온헬스케어(테스트)"
+        self.company_name = "??몃━?⑦뿬?ㅼ????뚯뒪??"
         self.ticker_code = ticker_code
         self.news = "OK"
         self.bio_domain = "OK"
@@ -56,62 +56,62 @@ class MockCompanyData:
 
 def run_tests():
     print("======================================================")
-    print("▶ 시나리오 A: 정상적인 실시간 Open DART 연동 케이스")
+    print("???쒕굹由ъ삤 A: ?뺤긽?곸씤 ?ㅼ떆媛?Open DART ?곕룞 耳?댁뒪")
     print("======================================================")
-    
+
     dart_client = dart_module.get_dart_client()
     dart_client.api_key = "VALID_DART_API_KEY_MOCK"
-    # 캐시 확인 로직 모의 (캐시가 이미 존재한다고 가정)
+    # 罹먯떆 ?뺤씤 濡쒖쭅 紐⑥쓽 (罹먯떆媛 ?대? 議댁옱?쒕떎怨?媛??
     dart_client.ticker_to_corp = {"091990": "00112233"}
-    
-    # Requests 라이브러리 가로채기 (네트워크 모의)
+
+    # Requests ?쇱씠釉뚮윭由?媛濡쒖콈湲?(?ㅽ듃?뚰겕 紐⑥쓽)
     original_get = requests.get
     requests.get = mock_requests_get_success
-    
-    # 기존에 입력된(하이브리드 결합용) 가상 데이터
+
+    # 湲곗〈???낅젰???섏씠釉뚮━??寃고빀?? 媛???곗씠??
     original_financial = FinancialData(
-        current_ratio=1.0, debt_ratio=99.0, operating_cash_flow=-5.0, 
+        current_ratio=1.0, debt_ratio=99.0, operating_cash_flow=-5.0,
         cash_assets=10.0, cash_runway_months=18.0, operating_profit_margin=-10.0, rd_expense_ratio=25.5
     )
-    
+
     state_a = {
         "company_data": MockCompanyData(financial=original_financial),
         "restart_required": False
     }
-    
-    print("\n[실행 로그]")
+
+    print("\n[?ㅽ뻾 濡쒓렇]")
     result_a = planner_node(state_a)
-    
-    print("\n[시나리오 A 검증 결과]")
+
+    print("\n[?쒕굹由ъ삤 A 寃利?寃곌낵]")
     res_fin = result_a["company_data"].financial
-    print(f"1) 유동비율(DART 오버라이트): {res_fin.current_ratio} (정상 산출: 500억/250억 = 2.0)")
-    print(f"2) 부채비율(DART 오버라이트): {res_fin.debt_ratio}% (정상 산출: 300억/700억*100 = 42.86%)")
-    print(f"3) 영업이익률(DART 오버라이트): {res_fin.operating_profit_margin}% (정상 산출: 150억/1000억*100 = 15.0%)")
-    print(f"4) R&D 비중(하이브리드 승계): {res_fin.rd_expense_ratio}% (기존 25.5% 보존 성공)")
-    print(f"5) Cash Runway(하이브리드 승계): {res_fin.cash_runway_months}개월 (기존 18.0개월 보존 성공)")
-    
-    
+    print(f"1) ?좊룞鍮꾩쑉(DART ?ㅻ쾭?쇱씠??: {res_fin.current_ratio} (?뺤긽 ?곗텧: 500??250??= 2.0)")
+    print(f"2) 遺梨꾨퉬??DART ?ㅻ쾭?쇱씠??: {res_fin.debt_ratio}% (?뺤긽 ?곗텧: 300??700??100 = 42.86%)")
+    print(f"3) ?곸뾽?댁씡瑜?DART ?ㅻ쾭?쇱씠??: {res_fin.operating_profit_margin}% (?뺤긽 ?곗텧: 150??1000??100 = 15.0%)")
+    print(f"4) R&D 鍮꾩쨷(?섏씠釉뚮━???밴퀎): {res_fin.rd_expense_ratio}% (湲곗〈 25.5% 蹂댁〈 ?깃났)")
+    print(f"5) Cash Runway(?섏씠釉뚮━???밴퀎): {res_fin.cash_runway_months}媛쒖썡 (湲곗〈 18.0媛쒖썡 蹂댁〈 ?깃났)")
+
+
     print("\n======================================================")
-    print("▶ 시나리오 B: DART API Key 누락 또는 서버 장애(Fallback) 케이스")
+    print("???쒕굹由ъ삤 B: DART API Key ?꾨씫 ?먮뒗 ?쒕쾭 ?μ븷(Fallback) 耳?댁뒪")
     print("======================================================")
-    
-    # 서버 장애 모의
+
+    # ?쒕쾭 ?μ븷 紐⑥쓽
     requests.get = mock_requests_get_fail
-    
+
     state_b = {
         "company_data": MockCompanyData(financial=original_financial),
         "restart_required": False
     }
-    
-    print("\n[실행 로그]")
+
+    print("\n[?ㅽ뻾 濡쒓렇]")
     result_b = planner_node(state_b)
-    
-    print("\n[시나리오 B 검증 결과]")
+
+    print("\n[?쒕굹由ъ삤 B 寃利?寃곌낵]")
     res_fin_b = result_b["company_data"].financial
-    print(f"1) 시스템 Crash 방어 및 예외 처리: 완료 (TypeError 없이 정상 우회)")
-    print(f"2) 기존 데이터 보존 여부(Fallback): 부채비율 {res_fin_b.debt_ratio}% (장애 전 기존 데이터 99.0%가 유실 없이 안전하게 승계됨)")
-    
-    # 복구
+    print(f"1) ?쒖뒪??Crash 諛⑹뼱 諛??덉쇅 泥섎━: ?꾨즺 (TypeError ?놁씠 ?뺤긽 ?고쉶)")
+    print(f"2) 湲곗〈 ?곗씠??蹂댁〈 ?щ?(Fallback): 遺梨꾨퉬??{res_fin_b.debt_ratio}% (?μ븷 ??湲곗〈 ?곗씠??99.0%媛 ?좎떎 ?놁씠 ?덉쟾?섍쾶 ?밴퀎??")
+
+    # 蹂듦뎄
     requests.get = original_get
 
 if __name__ == "__main__":

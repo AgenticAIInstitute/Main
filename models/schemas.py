@@ -1,6 +1,6 @@
 from __future__ import annotations
 from typing import Optional, Any
-from pydantic import BaseModel
+from pydantic import AliasChoices, BaseModel, Field
 from enum import Enum
 
 
@@ -61,7 +61,13 @@ class CompanyData(BaseModel):
     financial: FinancialData
     news: Optional[list[NewsItem]]
     bio_domain: BioDomainData
-    disclosure: DisclosureData
+    disclosure_data: DisclosureData = Field(
+        validation_alias=AliasChoices("disclosure_data", "disclosure")
+    )
+
+    @property
+    def disclosure(self) -> DisclosureData:
+        return self.disclosure_data
 
 
 class FinancialResult(BaseModel):
@@ -75,11 +81,23 @@ class NewsResult(BaseModel):
     negative_keywords: list[str]
     negative_critical_event: bool
     missing_news: bool
+    keyword_score: Optional[float] = None
+    keyword_hits: int = 0
+    llm_score: Optional[float] = None
+    llm_summary: str = ""
+    merge_weights: str = ""
 
 
 class BioDomainResult(BaseModel):
-    bio_score: float
+    bio_domain_score: float = Field(
+        validation_alias=AliasChoices("bio_domain_score", "bio_score")
+    )
     domain_risks: list[str]
+    summary: str = ""
+
+    @property
+    def bio_score(self) -> float:
+        return self.bio_domain_score
 
 
 class DisclosureResult(BaseModel):
@@ -123,6 +141,18 @@ class CompanyReport(BaseModel):
     final_decision: FinalDecision
     decision_reason: str
     report_text: str
+    financial_risk_factors: list[str] = Field(default_factory=list)
+    news_positive_keywords: list[str] = Field(default_factory=list)
+    news_negative_keywords: list[str] = Field(default_factory=list)
+    news_negative_critical_event: bool = False
+    news_keyword_score: Optional[float] = None
+    news_keyword_hits: int = 0
+    news_llm_score: Optional[float] = None
+    news_llm_summary: str = ""
+    news_merge_weights: str = ""
+    bio_domain_risks: list[str] = Field(default_factory=list)
+    bio_domain_summary: str = ""
+    disclosure_detected_keywords: list[str] = Field(default_factory=list)
 
 
 class BioAgentState(BaseModel):

@@ -25,7 +25,7 @@ biocredit_agent/
 ├── data/
 │   └── mock_companies.py         # 인메모리 Mock 기업 데이터 (7개사)
 ├── services/
-│   └── gemini_client.py          # Gemini API 클라이언트
+│   └── openai_client.py          # OpenAI API 클라이언트
 ├── models/
 │   └── schemas.py                # Pydantic 데이터 모델
 ├── requirements.txt
@@ -63,12 +63,12 @@ uvicorn app:app --host 0.0.0.0 --port 8000
 `.env.example`을 복사하여 `.env`를 생성하고 키를 입력합니다:
 
 ```
-GEMINI_API_KEY=your_api_key_here
-GEMINI_MODEL=gemini-1.5-flash
+OPENAI_API_KEY=your_api_key_here
+OPENAI_MODEL=gpt-5.4-mini
 ```
 
-- `GEMINI_API_KEY`: Google AI Studio에서 발급 (없어도 앱 정상 동작)
-- `GEMINI_MODEL`: 사용할 Gemini 모델 (기본값: gemini-1.5-flash)
+- `OPENAI_API_KEY`: OpenAI Platform에서 발급 (없어도 앱 정상 동작)
+- `OPENAI_MODEL`: 사용할 OpenAI 모델 (기본값: gpt-5.4-mini)
 
 ---
 
@@ -84,7 +84,7 @@ GEMINI_MODEL=gemini-1.5-flash
 | **RiskScoringAgent** | 가중합산(재무40+뉴스25+바이오25+공시10) → 최종점수 + A~E 등급 |
 | **SupervisoryReviewAgent** | 점수 간 모순·데이터 누락·치명적 리스크 감지 → special_case 판정 |
 | **LoanDecisionAgent** | 등급 + special_case 기반 최종 판단 |
-| **ReportWriterAgent** | Gemini AI 또는 템플릿 기반 한국어 보고서 생성 |
+| **ReportWriterAgent** | OpenAI AI 또는 템플릿 기반 한국어 보고서 생성 |
 
 ---
 

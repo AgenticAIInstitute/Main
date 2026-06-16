@@ -1,38 +1,42 @@
 from __future__ import annotations
-import sys
-import os
+
+import asyncio
 import logging
+import os
+import sys
+from html import escape
 from typing import Any
 
-# .env 로드 (최우선)
 try:
     from dotenv import load_dotenv
+
     load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
     load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
 except Exception:
     pass
 
-# 패키지 루트를 sys.path에 추가
 sys.path.insert(0, os.path.dirname(__file__))
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
-from langgraph.graph import StateGraph, END
+from langgraph.graph import END, StateGraph
 
-from models.schemas import BioAgentState, CompanyReport, SupervisoryResult, GradeEnum, NewsResult
-from data.mock_companies import MOCK_COMPANIES, COMPANIES_BY_ID
 from agents import (
-    planner_node as _planner_node_fn, FinancialAgent, news_node as _news_node_fn,
-    BioDomainAgent, DisclosureAgent, RiskScoringAgent, supervisory_review_node,
-    LoanDecisionAgent, ReportWriterAgent,
+    BioDomainAgent,
+    DisclosureAgent,
+    FinancialAgent,
+    LoanDecisionAgent,
+    ReportWriterAgent,
+    RiskScoringAgent,
+    news_node as _news_node_fn,
+    planner_node as _planner_node_fn,
+    supervisory_review_node,
 )
+from data.company_loader import build_companies_by_id, load_companies
+from models.schemas import BioAgentState, CompanyReport, GradeEnum, NewsResult, SupervisoryResult
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
 logger = logging.getLogger(__name__)
-
-# ──────────────────────────────────────────────
-# LangGraph 워크플로우 구성
-# ──────────────────────────────────────────────
 
 _financial = FinancialAgent()
 _bio = BioDomainAgent()
@@ -48,7 +52,6 @@ def planner_node(state: dict) -> dict:
     adapted["company_data"] = s.company_data
     result = _planner_node_fn(adapted)
 
-    # 재시작이었으면 BioAgentState의 분석 결과 초기화
     if state.get("restart_required", False):
         s.financial_result = None
         s.news_result = None
@@ -59,9 +62,8 @@ def planner_node(state: dict) -> dict:
         s.loan_decision_result = None
         s.report = None
 
-    # planner가 계산한 흐름 제어 필드 반영
-    s.restart_required  = result.get("restart_required") or False
-    s.restart_count     = result.get("restart_count") or s.restart_count
+    s.restart_required = result.get("restart_required") or False
+    s.restart_count = result.get("restart_count") or s.restart_count
     s.needs_human_review = result.get("needs_human_review") or False
     s.errors = result.get("errors") or list(s.errors)
     return s.model_dump()
@@ -75,21 +77,33 @@ def financial_node(state: dict) -> dict:
 def news_node(state: dict) -> dict:
     s = BioAgentState(**state)
     flat = {
-        "company_name":      s.company_data.company_name,
-        "naver_client_id":   os.environ.get("NAVER_CLIENT_ID", ""),
-        "naver_client_secret": os.environ.get("NAVER_CLIENT_SECRET", ""),
-        "gemini_api_key":    os.environ.get("GEMINI_API_KEY", "") or os.environ.get("GOOGLE_API_KEY", ""),
-        "gemini_model":      os.environ.get("GEMINI_MODEL", "gemini-1.5-flash"),
-        "errors":            list(s.errors),
+        "company_name": s.company_data.company_name,
+        "naver_client_id": os.environ.get("NAVER_CLIENT_ID", "").strip()
+        or os.environ.get("NAVER_NEWS_API_Client_ID", "").strip(),
+        "naver_client_secret": os.environ.get("NAVER_CLIENT_SECRET", "").strip()
+        or os.environ.get("NAVER_NEWS_API_Client_Secret", "").strip(),
+        "openai_api_key": os.environ.get("OPENAI_API_KEY", "").strip(),
+        "openai_model": os.environ.get("OPENAI_MODEL", "gpt-5.4-mini").strip(),
+        "errors": list(s.errors),
     }
     result = _news_node_fn(flat)
+    news_result = result.get("news_result")
+    if isinstance(news_result, dict):
+        news_result = NewsResult(**news_result)
+
     detail = result.get("news_detail", {})
-    s.news_result = NewsResult(
+    negative_keywords = list({*detail.get("neg_high", []), *detail.get("neg_mid", [])})
+    s.news_result = news_result or NewsResult(
         news_score=result.get("news_score"),
         positive_keywords=detail.get("positives", []),
-        negative_keywords=detail.get("neg_high", []),
+        negative_keywords=negative_keywords,
         negative_critical_event=bool(detail.get("neg_high", [])),
         missing_news=result.get("news_score") is None,
+        keyword_score=detail.get("keyword_score"),
+        keyword_hits=detail.get("keyword_hits", 0),
+        llm_score=detail.get("llm_score"),
+        llm_summary=result.get("news_summary", ""),
+        merge_weights=detail.get("merge_weights", ""),
     )
     s.errors = result.get("errors", list(s.errors))
     return s.model_dump()
@@ -113,24 +127,25 @@ def risk_scoring_node(state: dict) -> dict:
 def supervisory_node(state: dict) -> dict:
     s = BioAgentState(**state)
     disc_score_map = {"LOW": 100.0, "MEDIUM": 60.0, "HIGH": 20.0}
-    disc_level = (s.disclosure_result.disclosure_risk_level.value if s.disclosure_result else "MEDIUM")
+    disc_level = s.disclosure_result.disclosure_risk_level.value if s.disclosure_result else "MEDIUM"
     flat = {
-        "company_name":   s.company_data.company_name,
-        "gemini_api_key": os.environ.get("GEMINI_API_KEY", "") or os.environ.get("GOOGLE_API_KEY", ""),
-        "gemini_model":   os.environ.get("GEMINI_MODEL", "gemini-1.5-flash"),
-        "loan_grade":     s.risk_score_result.grade.value if s.risk_score_result else "",
-        "financial_score":  s.financial_result.financial_score if s.financial_result else None,
-        "news_score":       s.news_result.news_score if s.news_result else None,
-        "bio_score":        s.bio_domain_result.bio_score if s.bio_domain_result else None,
+        "company_name": s.company_data.company_name,
+        "openai_api_key": os.environ.get("OPENAI_API_KEY", "").strip(),
+        "openai_model": os.environ.get("OPENAI_MODEL", "gpt-5.4-mini").strip(),
+        "loan_grade": s.risk_score_result.grade.value if s.risk_score_result else "",
+        "financial_score": s.financial_result.financial_score if s.financial_result else None,
+        "news_score": s.news_result.news_score if s.news_result else None,
+        "bio_domain_score": s.bio_domain_result.bio_domain_score if s.bio_domain_result else None,
+        "bio_score": s.bio_domain_result.bio_domain_score if s.bio_domain_result else None,
         "disclosure_score": disc_score_map.get(disc_level, 60.0),
         "news_detail": {"neg_high": s.news_result.negative_keywords if s.news_result else []},
-        "news_summary":  "",
+        "news_summary": s.news_result.llm_summary if s.news_result else "",
         "restart_count": s.restart_count,
-        "errors":        list(s.errors),
+        "errors": list(s.errors),
     }
     result = supervisory_review_node(flat)
-    s.restart_required  = result.get("restart_required", False)
-    s.restart_count     = result.get("restart_count", s.restart_count)
+    s.restart_required = result.get("restart_required", False)
+    s.restart_count = result.get("restart_count", s.restart_count)
     s.needs_human_review = result.get("needs_human_review", False)
     s.errors = result.get("errors", list(s.errors))
     sup = result.get("supervisory_result", {})
@@ -167,35 +182,39 @@ def _route_after_supervisory(state: dict) -> str:
 
 
 def _build_graph() -> Any:
-    g = StateGraph(dict)
-    g.add_node("planner", planner_node)
-    g.add_node("financial", financial_node)
-    g.add_node("news", news_node)
-    g.add_node("bio_domain", bio_domain_node)
-    g.add_node("disclosure", disclosure_node)
-    g.add_node("risk_scoring", risk_scoring_node)
-    g.add_node("supervisory", supervisory_node)
-    g.add_node("loan_decision", loan_decision_node)
-    g.add_node("report_writer", report_writer_node)
+    graph = StateGraph(dict)
+    graph.add_node("planner", planner_node)
+    graph.add_node("financial", financial_node)
+    graph.add_node("news", news_node)
+    graph.add_node("bio_domain", bio_domain_node)
+    graph.add_node("disclosure", disclosure_node)
+    graph.add_node("risk_scoring", risk_scoring_node)
+    graph.add_node("supervisory", supervisory_node)
+    graph.add_node("loan_decision", loan_decision_node)
+    graph.add_node("report_writer", report_writer_node)
 
-    g.set_entry_point("planner")
-    g.add_edge("planner", "financial")
-    g.add_edge("financial", "news")
-    g.add_edge("news", "bio_domain")
-    g.add_edge("bio_domain", "disclosure")
-    g.add_edge("disclosure", "risk_scoring")
-    g.add_edge("risk_scoring", "supervisory")
-    g.add_conditional_edges(
+    graph.set_entry_point("planner")
+    graph.add_edge("planner", "financial")
+    graph.add_edge("financial", "news")
+    graph.add_edge("news", "bio_domain")
+    graph.add_edge("bio_domain", "disclosure")
+    graph.add_edge("disclosure", "risk_scoring")
+    graph.add_edge("risk_scoring", "supervisory")
+    graph.add_conditional_edges(
         "supervisory",
         _route_after_supervisory,
         {"planner": "planner", "loan_decision": "loan_decision"},
     )
-    g.add_edge("loan_decision", "report_writer")
-    g.add_edge("report_writer", END)
-    return g.compile()
+    graph.add_edge("loan_decision", "report_writer")
+    graph.add_edge("report_writer", END)
+    return graph.compile()
 
 
 _pipeline = _build_graph()
+_REPORTS: dict[str, CompanyReport] = {}
+_COMPANIES = []
+COMPANIES_BY_ID = {}
+_analysis_started = False
 
 
 def analyze_company(company_data: Any) -> CompanyReport:
@@ -203,35 +222,41 @@ def analyze_company(company_data: Any) -> CompanyReport:
     final_state = _pipeline.invoke(initial_state)
     result = BioAgentState(**final_state)
     if result.report is None:
-        raise RuntimeError(f"분석 실패: {company_data.company_id}")
+        raise RuntimeError(f"analysis failed: {company_data.company_id}")
     return result.report
 
 
-# ──────────────────────────────────────────────
-# 앱 시작 시 전체 기업 분석 실행
-# ──────────────────────────────────────────────
-
-_REPORTS: dict[str, CompanyReport] = {}
-
-
 def _run_all_analyses() -> None:
-    logger.info("전체 기업 분석 시작 (%d개)", len(MOCK_COMPANIES))
-    for company in MOCK_COMPANIES:
+    global _COMPANIES, COMPANIES_BY_ID
+    _COMPANIES = load_companies()
+    COMPANIES_BY_ID = build_companies_by_id(_COMPANIES)
+    _REPORTS.clear()
+
+    logger.info("KOSDAQ top company analysis started (%d companies)", len(_COMPANIES))
+    for company in _COMPANIES:
         try:
             report = analyze_company(company)
             _REPORTS[company.company_id] = report
-            logger.info("분석 완료: %s → %s (%s)", company.company_name, report.grade, report.final_decision)
-        except Exception as e:
-            logger.error("분석 오류 [%s]: %s", company.company_id, e)
+            logger.info(
+                "analysis complete: %s -> %s (%s)",
+                company.company_name,
+                report.grade,
+                report.final_decision,
+            )
+        except Exception as exc:
+            logger.error("analysis failed [%s]: %s", company.company_id, exc)
 
-
-_run_all_analyses()
-
-# ──────────────────────────────────────────────
-# FastAPI 앱
-# ──────────────────────────────────────────────
 
 app = FastAPI(title="BioCredit Agent", version="1.0.0")
+
+
+@app.on_event("startup")
+async def startup_analyses() -> None:
+    global _analysis_started
+    if not _analysis_started:
+        _analysis_started = True
+        asyncio.create_task(asyncio.to_thread(_run_all_analyses))
+
 
 DECISION_COLOR = {
     "APPROVED": "#27ae60",
@@ -244,309 +269,414 @@ DECISION_LABEL = {
     "HUMAN_IN_THE_LOOP": "전문가 검토",
 }
 GRADE_COLOR = {
-    "A": "#1a6b3a", "B": "#2980b9",
-    "C": "#e67e22", "D": "#c0392b", "E": "#7f0000",
+    "A": "#1f7a4f",
+    "B": "#2f80c7",
+    "C": "#e09f2f",
+    "D": "#d95f3d",
+    "E": "#8f2d2d",
 }
+
+
+def _fmt_score(value: float | None) -> str:
+    return f"{value:.1f}" if value is not None else "없음"
+
+
+def _safe_join(items: list[str]) -> str:
+    return ", ".join(items) if items else "없음"
+
+
+def _market_cap_text(value: float | None) -> str:
+    return f"{value:,.0f}억원" if value else "N/A"
+
 
 
 @app.get("/", response_class=HTMLResponse)
 async def main_page() -> HTMLResponse:
+    reports = sorted(_REPORTS.values(), key=lambda report: report.final_score, reverse=True)
+    main_reports = [
+        report
+        for report in reports
+        if report.grade.value in {"A", "B", "C"} and report.final_decision.value != "REJECTED"
+    ]
+    rejected_reports = [
+        report
+        for report in reports
+        if report.grade.value not in {"A", "B", "C"} or report.final_decision.value == "REJECTED"
+    ]
     rows = ""
-    visible_reports = []
-    hidden_count = 0
-    
-    for r in _REPORTS.values():
-        if r.grade.value in ["D", "E"]:
-            hidden_count += 1
-            continue
-        visible_reports.append(r)
-        
-        comp = COMPANIES_BY_ID.get(r.company_id)
-        ticker = comp.ticker_code if comp else "N/A"
-        industry = comp.industry_category if comp else "N/A"
-        mcap = f"{comp.market_cap:,.0f}억" if comp and comp.market_cap else "N/A"
+    rejected_rows = ""
+    panels = ""
 
-        news_str = f"{r.news_score:.1f}" if r.news_score is not None else "<em>없음</em>"
-        dec_color = DECISION_COLOR.get(r.final_decision.value, "#555")
-        dec_label = DECISION_LABEL.get(r.final_decision.value, r.final_decision.value)
-        grade_color = GRADE_COLOR.get(r.grade.value, "#555")
-        special_badge = (
-            '<span class="badge badge-warn">특이</span>'
-            if r.special_case
-            else '<span class="badge badge-ok">정상</span>'
-        )
-        rows += f"""
+    def render_row(report: CompanyReport, compact: bool = False) -> str:
+        company = COMPANIES_BY_ID.get(report.company_id)
+        ticker = escape(company.ticker_code if company else report.company_id)
+        industry = escape(company.industry_category if company else "N/A")
+        market_cap = _market_cap_text(company.market_cap if company else None)
+        news_str = _fmt_score(report.news_score)
+        decision_label = DECISION_LABEL.get(report.final_decision.value, report.final_decision.value)
+        decision_color = DECISION_COLOR.get(report.final_decision.value, "#555")
+        grade_color = GRADE_COLOR.get(report.grade.value, "#555")
+        special_text = "있음" if report.special_case else "없음"
+        panel_id = f"news-{report.company_id}"
+
+        if compact:
+            return f'''
         <tr>
-          <td><strong>{r.company_name}</strong></td>
-          <td><span style="color:#718096;font-family:monospace;font-size:0.8rem">{ticker}</span></td>
-          <td><span style="color:#4a5568;font-size:0.82rem">{industry}</span></td>
-          <td class="num" style="color:#4a5568;font-size:0.82rem">{mcap}</td>
-          <td class="num"><strong>{r.final_score:.1f}</strong></td>
-          <td><span class="grade" style="background:{grade_color}">{r.grade.value}</span></td>
-          <td class="num">{r.financial_score:.1f}</td>
-          <td class="num">{news_str}</td>
-          <td class="num">{r.bio_score:.1f}</td>
-          <td class="num">{r.disclosure_risk_level.value}</td>
-          <td>{special_badge}</td>
-          <td><span class="decision" style="background:{dec_color}">{dec_label}</span></td>
-          <td><a href="/companies/{r.company_id}" class="btn-detail">상세보기</a></td>
-        </tr>"""
+          <td><strong>{escape(report.company_name)}</strong><div class="muted mono">{ticker}</div></td>
+          <td><span class="grade" style="background:{grade_color}">{report.grade.value}</span></td>
+          <td class="num"><strong>{report.final_score:.1f}</strong></td>
+          <td><span class="decision" style="background:{decision_color}">{decision_label}</span></td>
+          <td><a class="btn-detail" href="/companies/{report.company_id}">상세</a></td>
+        </tr>'''
+
+        return f'''
+        <tr>
+          <td><strong>{escape(report.company_name)}</strong></td>
+          <td class="mono">{ticker}</td>
+          <td>{industry}</td>
+          <td class="num">{market_cap}</td>
+          <td class="num"><strong>{report.final_score:.1f}</strong></td>
+          <td><span class="grade" style="background:{grade_color}">{report.grade.value}</span></td>
+          <td class="num">{report.financial_score:.1f}</td>
+          <td class="num"><button class="score-btn" type="button" data-panel="{panel_id}">{news_str}</button></td>
+          <td class="num">{report.bio_score:.1f}</td>
+          <td>{escape(report.disclosure_risk_level.value)}</td>
+          <td>{special_text}</td>
+          <td><span class="decision" style="background:{decision_color}">{decision_label}</span></td>
+          <td><a class="btn-detail" href="/companies/{report.company_id}">상세보기</a></td>
+        </tr>'''
+
+    for report in main_reports:
+        rows += render_row(report)
+        panel_id = f"news-{report.company_id}"
+        news_str = _fmt_score(report.news_score)
+        positive = escape(_safe_join(report.news_positive_keywords))
+        negative = escape(_safe_join(report.news_negative_keywords))
+        llm_summary = escape(report.news_llm_summary or "없음")
+        merge_weights = escape(report.news_merge_weights or "없음")
+        critical = "감지됨" if report.news_negative_critical_event else "없음"
+        panels += f'''
+        <section id="{panel_id}" class="reason-panel">
+          <div class="reason-title">{escape(report.company_name)} 뉴스 분석 해석</div>
+          <div class="reason-grid">
+            <div><span>뉴스 최종 점수</span><strong>{news_str}</strong></div>
+            <div><span>키워드 점수</span><strong>{_fmt_score(report.news_keyword_score)}</strong></div>
+            <div><span>LLM 점수</span><strong>{_fmt_score(report.news_llm_score)}</strong></div>
+            <div><span>키워드 적중</span><strong>{report.news_keyword_hits}</strong></div>
+          </div>
+          <ul>
+            <li><strong>긍정 키워드:</strong> {positive}</li>
+            <li><strong>부정 키워드:</strong> {negative}</li>
+            <li><strong>중대 부정 이벤트:</strong> {critical}</li>
+            <li><strong>병합 가중치:</strong> {merge_weights}</li>
+            <li><strong>LLM 요약:</strong> {llm_summary}</li>
+          </ul>
+        </section>'''
+
+    for report in rejected_reports:
+        rejected_rows += render_row(report, compact=True)
+
+    if not rows:
+        rows = '<tr><td colspan="13" class="empty">A/B/C 등급 기업이 아직 없습니다.</td></tr>'
+    if not rejected_rows:
+        rejected_rows = '<tr><td colspan="5" class="empty">부결 또는 D/E 등급 기업이 없습니다.</td></tr>'
+
+    approved_count = sum(1 for report in reports if report.final_decision.value == "APPROVED")
+    review_count = sum(1 for report in reports if report.final_decision.value == "HUMAN_IN_THE_LOOP")
+    rejected_count = sum(1 for report in reports if report.final_decision.value == "REJECTED")
+    total_companies = len(_COMPANIES) or int(os.getenv("KOSDAQ_TOP_LIMIT", "50"))
+
+    html = f'''<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BioCredit Agent - KOSDAQ Top 50</title>
+<style>
+  * {{ box-sizing: border-box; }}
+  body {{ margin:0; font-family:'Segoe UI', Arial, sans-serif; background:#eef3f8; color:#253044; }}
+  header {{ background:linear-gradient(135deg,#16345b 0%,#245c88 62%,#2d7c8f 100%); color:white; padding:28px 42px; box-shadow:0 3px 14px rgba(15,35,65,.18); }}
+  header h1 {{ margin:0; font-size:1.9rem; letter-spacing:0; }}
+  header p {{ margin:8px 0 0; opacity:.9; }}
+  .container {{ max-width:none; margin:28px auto; padding:0 20px; }}
+  .dashboard-grid {{ display:grid; grid-template-columns:minmax(0,1fr) 154px; gap:18px; align-items:start; transition:grid-template-columns .22s ease; }}
+  .dashboard-grid.rejected-open {{ grid-template-columns:minmax(0,1fr) 410px; }}
+  .card {{ background:white; border-radius:8px; box-shadow:0 2px 14px rgba(23,43,77,.1); overflow:hidden; border:1px solid #dde7f1; }}
+  .card-header {{ display:flex; justify-content:space-between; align-items:center; gap:16px; padding:18px 24px; border-bottom:1px solid #e2e8f0; }}
+  .card-header h2 {{ margin:0; font-size:1.08rem; }}
+  .side-card {{ position:sticky; top:18px; width:100%; max-height:calc(100vh - 48px); z-index:5; transition:max-height .22s ease; }}
+  .side-card.open {{ max-height:calc(100vh - 48px); }}
+  .side-card .card-header {{ cursor:pointer; user-select:none; min-height:68px; }}
+  .side-card .table-wrap {{ display:none; }}
+  .side-card.open .table-wrap {{ display:block; max-height:calc(100vh - 145px); overflow:auto; }}
+  .side-card:not(.open) .card-header {{ flex-direction:column; justify-content:center; align-items:center; gap:8px; padding:12px 10px; text-align:center; }}
+  .side-card:not(.open) h2 {{ font-size:.86rem; line-height:1.3; }}
+  .side-card:not(.open) .stats {{ justify-content:center; }}
+  .side-card:not(.open) .stat {{ display:none; }}
+  .stats {{ display:flex; flex-wrap:wrap; gap:8px; }}
+  .stat {{ background:#e8f3fb; color:#1e5b89; border-radius:6px; padding:7px 12px; font-size:.82rem; font-weight:700; }}
+  .toggle-btn {{ border:1px solid #e2b8b8; background:#fff7f7; color:#9b1c1c; border-radius:5px; padding:7px 10px; font-weight:800; cursor:pointer; }}
+  .toggle-btn::after {{ content:"열기"; }}
+  .side-card.open .toggle-btn::after {{ content:"닫기"; }}
+  .table-wrap {{ overflow-x:auto; }}
+  table {{ width:100%; border-collapse:collapse; min-width:1180px; }}
+  .side-card table {{ min-width:0; }}
+  th {{ background:#f7fafc; color:#607086; text-align:left; padding:11px 12px; font-size:.79rem; border-bottom:2px solid #dce6f0; white-space:nowrap; }}
+  td {{ padding:12px; border-bottom:1px solid #edf2f7; font-size:.86rem; vertical-align:middle; }}
+  tr:hover td {{ background:#f7fbff; }}
+  .num {{ text-align:right; font-variant-numeric:tabular-nums; }}
+  .mono {{ font-family:Consolas, monospace; color:#4c5f76; }}
+  .muted {{ color:#718096; font-size:.75rem; margin-top:3px; }}
+  .grade {{ display:inline-block; min-width:28px; text-align:center; color:white; font-weight:800; border-radius:5px; padding:3px 9px; }}
+  .decision {{ display:inline-block; color:white; border-radius:14px; padding:4px 10px; font-size:.78rem; font-weight:700; white-space:nowrap; }}
+  .btn-detail {{ display:inline-block; background:#245c88; color:white; text-decoration:none; border-radius:5px; padding:6px 10px; font-size:.8rem; white-space:nowrap; }}
+  .btn-detail:hover {{ background:#173f63; }}
+  .score-btn {{ border:1px solid #8fc4e8; background:#e8f4fd; color:#174b73; border-radius:5px; padding:5px 9px; min-width:54px; cursor:pointer; font:inherit; font-weight:800; }}
+  .score-btn:hover, .score-btn.active {{ background:#245c88; color:white; }}
+  .empty {{ text-align:center; color:#718096; padding:34px; }}
+  .reason-panel {{ display:none; margin-top:16px; background:#fbfdff; border:1px solid #cfddeb; border-radius:8px; padding:18px; box-shadow:0 1px 8px rgba(23,43,77,.06); }}
+  .reason-panel.active {{ display:block; }}
+  .reason-title {{ font-weight:800; color:#1e5b89; margin-bottom:12px; }}
+  .reason-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(145px,1fr)); gap:10px; margin-bottom:12px; }}
+  .reason-grid div {{ background:white; border:1px solid #e2e8f0; border-radius:6px; padding:10px; }}
+  .reason-grid span {{ display:block; color:#718096; font-size:.76rem; margin-bottom:5px; }}
+  .reason-panel ul {{ margin:0; padding-left:18px; line-height:1.72; }}
+  @media (max-width:1180px) {{
+    .dashboard-grid, .dashboard-grid.rejected-open {{ display:block; }}
+    .side-card {{ position:static; width:100%; margin-top:16px; }}
+    .side-card.open {{ width:100%; }}
+  }}
+  footer {{ text-align:center; color:#8da0b4; padding:22px; font-size:.8rem; }}
+</style>
+</head>
+<body>
+<header>
+  <h1>BioCredit Agent</h1>
+  <p>코스닥 상위 50개 기업 신용 분석 대시보드</p>
+</header>
+<div class="container">
+  <div class="dashboard-grid" id="dashboard-grid">
+    <div class="card">
+      <div class="card-header">
+        <h2>A/B/C 등급 기업 ({len(main_reports)}개, 점수 높은 순)</h2>
+        <div class="stats">
+          <span class="stat">분석 {len(reports)} / {total_companies}</span>
+          <span class="stat">승인 {approved_count}</span>
+          <span class="stat">검토 {review_count}</span>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>기업명</th><th>종목코드</th><th>시장/분류</th><th class="num">시가총액</th>
+              <th class="num">최종점수</th><th>등급</th><th class="num">재무</th><th class="num">뉴스</th>
+              <th class="num">바이오</th><th>공시</th><th>특이사항</th><th>판단</th><th>상세</th>
+            </tr>
+          </thead>
+          <tbody>{rows}</tbody>
+        </table>
+      </div>
+    </div>
+    <aside class="card side-card" id="rejected-card">
+      <div class="card-header" id="rejected-toggle" role="button" tabindex="0" aria-expanded="false" aria-controls="rejected-panel">
+        <h2>부결/D/E 등급 ({len(rejected_reports)}개)</h2>
+        <div class="stats">
+          <span class="stat" style="background:#fdf2f2;color:#9b1c1c">부결 {rejected_count}</span>
+          <button class="toggle-btn" type="button" aria-label="부결 기업 목록 열기"></button>
+        </div>
+      </div>
+      <div class="table-wrap" id="rejected-panel">
+        <table>
+          <thead>
+            <tr><th>기업</th><th>등급</th><th class="num">점수</th><th>판단</th><th>상세</th></tr>
+          </thead>
+          <tbody>{rejected_rows}</tbody>
+        </table>
+      </div>
+    </aside>
+  </div>
+  <div id="news-panels">{panels}</div>
+</div>
+<footer>BioCredit Agent v1.0 · KOSDAQ Top 50 · FastAPI</footer>
+<script>
+  document.querySelectorAll('.score-btn').forEach((button) => {{
+    button.addEventListener('click', () => {{
+      const id = button.dataset.panel;
+      const panel = document.getElementById(id);
+      const wasActive = panel && panel.classList.contains('active');
+      document.querySelectorAll('.reason-panel').forEach((item) => item.classList.remove('active'));
+      document.querySelectorAll('.score-btn').forEach((item) => item.classList.remove('active'));
+      if (panel && !wasActive) {{
+        panel.classList.add('active');
+        button.classList.add('active');
+        panel.scrollIntoView({{ behavior: 'smooth', block: 'nearest' }});
+      }}
+    }});
+  }});
+  const rejectedCard = document.getElementById('rejected-card');
+  const rejectedToggle = document.getElementById('rejected-toggle');
+  const dashboardGrid = document.getElementById('dashboard-grid');
+  if (rejectedCard && rejectedToggle) {{
+    const setRejectedOpen = () => {{
+      const isOpen = rejectedCard.classList.toggle('open');
+      if (dashboardGrid) {{
+        dashboardGrid.classList.toggle('rejected-open', isOpen);
+      }}
+      rejectedToggle.setAttribute('aria-expanded', String(isOpen));
+    }};
+    rejectedToggle.addEventListener('click', setRejectedOpen);
+    rejectedToggle.addEventListener('keydown', (event) => {{
+      if (event.key === 'Enter' || event.key === ' ') {{
+        event.preventDefault();
+        setRejectedOpen();
+      }}
+    }});
+  }}
+  const renderedCount = {len(reports)};
+  const totalCompanies = {total_companies};
+  if (renderedCount < totalCompanies) {{
+    window.setTimeout(async () => {{
+      try {{
+        const response = await fetch('/api/status', {{ cache: 'no-store' }});
+        const status = await response.json();
+        if (status.completed > renderedCount) {{
+          window.location.reload();
+        }}
+      }} catch (error) {{
+        console.warn('status refresh failed', error);
+      }}
+    }}, 6000);
+  }}
+</script>
+</body>
+</html>'''
+    return HTMLResponse(content=html)
+
+
+@app.get("/companies/{company_id}", response_class=HTMLResponse)
+async def company_detail(company_id: str) -> HTMLResponse:
+    report = _REPORTS.get(company_id)
+    if not report:
+        raise HTTPException(status_code=404, detail=f"Company ID '{company_id}' not found.")
+
+    company = COMPANIES_BY_ID.get(company_id)
+    ticker = escape(company.ticker_code if company else "N/A")
+    industry = escape(company.industry_category if company else "N/A")
+    market_cap = _market_cap_text(company.market_cap if company else None)
+    news_str = _fmt_score(report.news_score)
+    decision_label = DECISION_LABEL.get(report.final_decision.value, report.final_decision.value)
+    grade_color = GRADE_COLOR.get(report.grade.value, "#555")
+    report_html = escape(report.report_text).replace("\n", "<br>")
+    bio_summary = escape(report.bio_domain_summary or "없음")
+    news_summary = escape(report.news_llm_summary or "없음")
+    positive = escape(_safe_join(report.news_positive_keywords))
+    negative = escape(_safe_join(report.news_negative_keywords))
+    financial_risks = escape(_safe_join(report.financial_risk_factors))
+    disclosure_keywords = escape(_safe_join(report.disclosure_detected_keywords))
 
     html = f"""<!DOCTYPE html>
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>BioCredit Agent — 여신심사 대시보드</title>
+<title>{escape(report.company_name)} - BioCredit Agent</title>
 <style>
-  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-  body {{ font-family: 'Segoe UI', sans-serif; background: #f0f4f8; color: #2d3748; }}
-  header {{ background: linear-gradient(135deg, #1a365d 0%, #2b6cb0 100%);
-            color: white; padding: 24px 40px; }}
-  header h1 {{ font-size: 1.8rem; font-weight: 700; }}
-  header p  {{ font-size: 0.9rem; opacity: 0.85; margin-top: 4px; }}
-  .container {{ max-width: 1350px; margin: 30px auto; padding: 0 20px; }}
-  .card {{ background: white; border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,.08);
-           overflow: hidden; }}
-  .card-header {{ padding: 20px 28px; border-bottom: 1px solid #e2e8f0;
-                  display: flex; justify-content: space-between; align-items: center; }}
-  .card-header h2 {{ font-size: 1.1rem; color: #2d3748; }}
-  .stats {{ display: flex; gap: 12px; }}
-  .stat {{ background: #ebf8ff; color: #2b6cb0; border-radius: 8px;
-           padding: 6px 14px; font-size: 0.82rem; font-weight: 600; }}
-  table {{ width: 100%; border-collapse: collapse; }}
-  th {{ background: #f7fafc; padding: 12px 16px; text-align: left;
-        font-size: 0.82rem; color: #718096; font-weight: 600;
-        border-bottom: 2px solid #e2e8f0; white-space: nowrap; }}
-  td {{ padding: 13px 16px; border-bottom: 1px solid #f0f4f8;
-        font-size: 0.88rem; vertical-align: middle; }}
-  tr:hover td {{ background: #f7fafc; }}
-  .num {{ text-align: right; font-variant-numeric: tabular-nums; }}
-  .grade {{ display: inline-block; color: white; font-weight: 700;
-            border-radius: 6px; padding: 3px 10px; font-size: 0.9rem; }}
-  .decision {{ display: inline-block; color: white; border-radius: 20px;
-               padding: 4px 12px; font-size: 0.8rem; font-weight: 600; white-space: nowrap; }}
-  .badge {{ display: inline-block; border-radius: 12px; padding: 3px 10px;
-            font-size: 0.78rem; font-weight: 600; }}
-  .badge-warn {{ background: #fff3cd; color: #856404; }}
-  .badge-ok   {{ background: #d1e7dd; color: #0f5132; }}
-  .btn-detail {{ background: #2b6cb0; color: white; text-decoration: none;
-                 border-radius: 6px; padding: 5px 12px; font-size: 0.8rem;
-                 white-space: nowrap; transition: background .2s; }}
-  .btn-detail:hover {{ background: #1a4e8a; }}
-  .legend {{ margin-top: 20px; display: flex; flex-direction: column; gap: 10px; padding: 0 4px; }}
-  .legend-row {{ display: flex; flex-wrap: wrap; gap: 12px; }}
-  .legend-item {{ font-size: 0.8rem; color: #718096; }}
-  .legend-item strong {{ color: #4a5568; }}
-  .warning-banner {{ background: #fdf2f2; border-left: 4px solid #f05252; color: #9b1c1c; 
-                     padding: 12px 16px; border-radius: 6px; font-size: 0.82rem; font-weight: 500;
-                     margin-top: 10px; }}
-  footer {{ text-align: center; padding: 24px; color: #a0aec0; font-size: 0.8rem; }}
+  body {{ margin:0; font-family:'Segoe UI', Arial, sans-serif; background:#eef3f8; color:#253044; }}
+  header {{ background:linear-gradient(135deg,#16345b,#245c88 65%,#2d7c8f); color:white; padding:22px 36px; }}
+  header a {{ color:white; text-decoration:none; opacity:.9; font-weight:700; }}
+  header h1 {{ margin:10px 0 0; font-size:1.55rem; }}
+  main {{ max-width:1120px; margin:24px auto; padding:0 20px; }}
+  .card {{ background:white; border-radius:8px; padding:22px; margin-bottom:18px; box-shadow:0 1px 10px rgba(23,43,77,.09); border:1px solid #dde7f1; }}
+  .grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; }}
+  .metric {{ background:#f7fafc; border:1px solid #e2e8f0; border-radius:6px; padding:14px; }}
+  .metric-button {{ width:100%; text-align:left; cursor:pointer; font:inherit; color:inherit; }}
+  .metric-button:hover, .metric-button.active {{ border-color:#8fc4e8; background:#e8f4fd; box-shadow:0 0 0 2px rgba(36,92,136,.08); }}
+  .label {{ color:#718096; font-size:.78rem; margin-bottom:6px; }}
+  .value {{ font-size:1.15rem; font-weight:800; }}
+  .grade {{ display:inline-block; background:{grade_color}; color:white; padding:5px 12px; border-radius:5px; }}
+  .report {{ background:#f8fafc; border:1px solid #e2e8f0; border-radius:6px; padding:16px; line-height:1.65; }}
+  .evidence-panel {{ display:none; }}
+  .evidence-panel.active {{ display:block; }}
+  ul {{ line-height:1.7; padding-left:20px; }}
 </style>
 </head>
 <body>
-<header>
-  <h1>BioCredit Agent</h1>
-  <p>코스닥 바이오·제약 기업 여신 심사 AI 대시보드 (1차 MVP)</p>
-</header>
-<div class="container">
-  <div class="card">
-    <div class="card-header">
-      <h2>기업 심사 결과 (A~C등급 대상, {len(visible_reports)}개사 노출)</h2>
-      <div class="stats">
-        <span class="stat">승인 {sum(1 for r in visible_reports if r.final_decision.value == "APPROVED")}건</span>
-        <span class="stat" style="background:#fff3cd;color:#856404">검토 {sum(1 for r in visible_reports if r.final_decision.value == "HUMAN_IN_THE_LOOP")}건</span>
-      </div>
+<header><a href="/">← 목록으로</a><h1>{escape(report.company_name)} 상세 보고서</h1></header>
+<main>
+  <section class="card">
+    <div class="grid">
+      <div class="metric"><div class="label">종목코드</div><div class="value">{ticker}</div></div>
+      <div class="metric"><div class="label">시장/분류</div><div class="value">{industry}</div></div>
+      <div class="metric"><div class="label">시가총액</div><div class="value">{market_cap}</div></div>
+      <div class="metric"><div class="label">등급</div><div class="value"><span class="grade">{report.grade.value}</span></div></div>
+      <button class="metric metric-button active" type="button" data-panel="final-evidence"><div class="label">최종점수</div><div class="value">{report.final_score:.1f}</div></button>
+      <button class="metric metric-button" type="button" data-panel="financial-evidence"><div class="label">재무</div><div class="value">{report.financial_score:.1f}</div></button>
+      <button class="metric metric-button" type="button" data-panel="news-evidence"><div class="label">뉴스</div><div class="value">{news_str}</div></button>
+      <button class="metric metric-button" type="button" data-panel="bio-evidence"><div class="label">바이오</div><div class="value">{report.bio_score:.1f}</div></button>
+      <div class="metric"><div class="label">판단</div><div class="value">{decision_label}</div></div>
     </div>
-    <table>
-      <thead>
-        <tr>
-          <th>기업명</th><th>종목코드</th><th>산업 분류</th><th style="text-align:right">시가총액</th>
-          <th style="text-align:right">최종점수</th><th>등급</th>
-          <th style="text-align:right">재무점수</th><th style="text-align:right">뉴스점수</th>
-          <th style="text-align:right">바이오점수</th><th>공시리스크</th>
-          <th>특이사항</th><th>최종판단</th><th>상세</th>
-        </tr>
-      </thead>
-      <tbody>{rows}</tbody>
-    </table>
-  </div>
-  
-  {f'<div class="warning-banner">⚠️ 여신 심사 지침에 의거, 대출 비추천 및 불가 대상인 D·E 등급 기업({hidden_count}개사)은 메인 대시보드 화면에서 자동으로 필터링 및 제외되었습니다.</div>' if hidden_count > 0 else ''}
-
-  <div class="legend">
-    <div class="legend-row">
-      <span class="legend-item"><strong>등급 기준:</strong> A≥85 · B≥70 · C≥55 · D≥40 · E&lt;40</span>
-      <span class="legend-item"><strong>가중치:</strong> 재무40% · 뉴스25% · 바이오25% · 공시10%</span>
-      <span class="legend-item"><strong>판단:</strong> A·B→승인 · C→전문가검토 · D·E→부결 · 특이사항→전문가검토</span>
-    </div>
-  </div>
-</div>
-<footer>BioCredit Agent v1.0 · LangGraph + Gemini AI · FastAPI</footer>
-</body>
-</html>"""
-    return HTMLResponse(content=html)
-
-
-@app.get("/companies/{company_id}", response_class=HTMLResponse)
-async def company_detail(company_id: str) -> HTMLResponse:
-    r = _REPORTS.get(company_id)
-    if not r:
-        raise HTTPException(status_code=404, detail=f"기업 ID '{company_id}'를 찾을 수 없습니다.")
-
-    comp = COMPANIES_BY_ID.get(company_id)
-    ticker = comp.ticker_code if comp else "N/A"
-    industry = comp.industry_category if comp else "N/A"
-    mcap = f"{comp.market_cap:,.0f}억원" if comp and comp.market_cap else "N/A"
-    opm = f"{comp.financial.operating_profit_margin:.1f}%" if comp else "N/A"
-    rd = f"{comp.financial.rd_expense_ratio:.1f}%" if comp else "N/A"
-
-    news_str = f"{r.news_score:.1f}점" if r.news_score is not None else "데이터 없음 (판단 불확실)"
-    dec_color = DECISION_COLOR.get(r.final_decision.value, "#555")
-    dec_label = DECISION_LABEL.get(r.final_decision.value, r.final_decision.value)
-    grade_color = GRADE_COLOR.get(r.grade.value, "#555")
-    special_str = "있음 ⚠️" if r.special_case else "없음"
-    report_html = r.report_text.replace("\n", "<br>")
-
-    html = f"""<!DOCTYPE html>
-<html lang="ko">
-<head>
-<meta charset="UTF-8">
-<title>{r.company_name} — BioCredit Agent</title>
-<style>
-  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-  body {{ font-family: 'Segoe UI', sans-serif; background: #f0f4f8; color: #2d3748; }}
-  header {{ background: linear-gradient(135deg, #1a365d 0%, #2b6cb0 100%);
-            color: white; padding: 20px 40px; display: flex; align-items: center; gap: 20px; }}
-  header a {{ color: rgba(255,255,255,.8); text-decoration: none; font-size: 0.9rem; }}
-  header h1 {{ font-size: 1.5rem; font-weight: 700; }}
-  .container {{ max-width: 900px; margin: 30px auto; padding: 0 20px; display: grid;
-                gap: 20px; }}
-  .card {{ background: white; border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,.08);
-           padding: 28px; }}
-  .card h2 {{ font-size: 1.05rem; color: #4a5568; margin-bottom: 18px;
-              padding-bottom: 10px; border-bottom: 2px solid #e2e8f0; }}
-  .info-table {{ width: 100%; border-collapse: collapse; margin-bottom: 10px; }}
-  .info-table td {{ padding: 8px 12px; font-size: 0.88rem; border-bottom: 1px solid #edf2f7; }}
-  .info-table td.label {{ color: #718096; font-weight: 600; width: 140px; }}
-  .info-table td.value {{ color: #2d3748; font-weight: 500; }}
-  .summary-grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
-                   gap: 16px; }}
-  .metric {{ background: #f7fafc; border-radius: 10px; padding: 16px; text-align: center; }}
-  .metric .label {{ font-size: 0.78rem; color: #718096; margin-bottom: 6px; }}
-  .metric .value {{ font-size: 1.5rem; font-weight: 700; color: #2d3748; }}
-  .metric .sub {{ font-size: 0.78rem; color: #a0aec0; margin-top: 4px; }}
-  .grade-big {{ display: inline-block; color: white; border-radius: 10px;
-                padding: 8px 22px; font-size: 1.8rem; font-weight: 800;
-                background: {grade_color}; }}
-  .decision-badge {{ display: inline-block; color: white; border-radius: 24px;
-                     padding: 8px 22px; font-size: 1.1rem; font-weight: 700;
-                     background: {dec_color}; }}
-  .flags {{ list-style: none; }}
-  .flags li {{ padding: 8px 12px; background: #fff8e1; border-left: 4px solid #f59e0b;
-               border-radius: 4px; margin-bottom: 8px; font-size: 0.88rem; }}
-  .report-box {{ background: #f7fafc; border-radius: 8px; padding: 20px;
-                 font-size: 0.9rem; line-height: 1.8; color: #4a5568; }}
-  .back-btn {{ display: inline-block; background: #2b6cb0; color: white;
-               text-decoration: none; border-radius: 8px; padding: 10px 22px;
-               font-size: 0.9rem; margin-top: 10px; }}
-  .back-btn:hover {{ background: #1a4e8a; }}
-</style>
-</head>
-<body>
-<header>
-  <div>
-    <a href="/">← 목록으로 돌아가기</a>
-    <h1>{r.company_name} 여신심사 상세 보고서</h1>
-  </div>
-</header>
-<div class="container">
-  <!-- 기업 기본 정보 카드 -->
-  <div class="card">
-    <h2>기업 기본 정보</h2>
-    <table class="info-table">
-      <tr>
-        <td class="label">기업명</td>
-        <td class="value">{r.company_name}</td>
-        <td class="label">종목코드</td>
-        <td class="value" style="font-family:monospace;font-weight:600">{ticker}</td>
-      </tr>
-      <tr>
-        <td class="label">산업 분류</td>
-        <td class="value">{industry}</td>
-        <td class="label">시가총액</td>
-        <td class="value">{mcap}</td>
-      </tr>
-      <tr>
-        <td class="label">영업이익률</td>
-        <td class="value" style="color: {'#e53e3e' if '-' in opm else '#2b6cb0'}">{opm}</td>
-        <td class="label">R&D 비용 비중</td>
-        <td class="value" style="color:#2ecc71">{rd}</td>
-      </tr>
-    </table>
-  </div>
-
-  <div class="card">
-    <h2>심사 결과 요약</h2>
-    <div class="summary-grid">
-      <div class="metric">
-        <div class="label">최초 산출 등급</div>
-        <div class="value"><span class="grade-big">{r.grade.value}</span></div>
-      </div>
-      <div class="metric">
-        <div class="label">최종 점수</div>
-        <div class="value">{r.final_score:.1f}</div>
-        <div class="sub">/ 100점</div>
-      </div>
-      <div class="metric">
-        <div class="label">재무 점수</div>
-        <div class="value">{r.financial_score:.1f}</div>
-        <div class="sub">영업이익률: {opm}<br>R&D 비중: {rd}</div>
-      </div>
-      <div class="metric">
-        <div class="label">뉴스 점수</div>
-        <div class="value" style="font-size:1.1rem">{news_str}</div>
-        <div class="sub">가중치 25%</div>
-      </div>
-      <div class="metric">
-        <div class="label">바이오 점수</div>
-        <div class="value">{r.bio_score:.1f}</div>
-        <div class="sub">가중치 25%</div>
-      </div>
-      <div class="metric">
-        <div class="label">공시 리스크</div>
-        <div class="value" style="font-size:1.1rem">{r.disclosure_risk_level.value}</div>
-        <div class="sub">가중치 10%</div>
-      </div>
-      <div class="metric">
-        <div class="label">특이사항</div>
-        <div class="value" style="font-size:1rem">{special_str}</div>
-      </div>
-      <div class="metric">
-        <div class="label">최종 판단</div>
-        <div class="value"><span class="decision-badge">{dec_label}</span></div>
-      </div>
-    </div>
-  </div>
-
-  {"" if not r.special_case else f'''
-  <div class="card">
-    <h2>⚠️ 특이사항 상세</h2>
-    <p style="font-size:.88rem;color:#4a5568;line-height:1.7">{r.special_case_reason.replace(chr(10), "<br>")}</p>
-  </div>'''}
-
-  <div class="card">
-    <h2>최종 판단 근거</h2>
-    <p style="font-size:.9rem;line-height:1.7;color:#4a5568">{r.decision_reason}</p>
-  </div>
-
-  <div class="card">
-    <h2>AI 생성 심사 보고서</h2>
-    <div class="report-box">{report_html}</div>
-  </div>
-
-  <a href="/" class="back-btn">← 기업 목록으로 돌아가기</a>
-</div>
+  </section>
+  <section class="card evidence-panel active" id="final-evidence">
+    <h2>최종점수 산출 근거</h2>
+    <ul>
+      <li><strong>최종점수:</strong> {report.final_score:.1f}</li>
+      <li><strong>등급:</strong> {report.grade.value}</li>
+      <li><strong>판단:</strong> {decision_label}</li>
+      <li><strong>재무 점수:</strong> {report.financial_score:.1f}</li>
+      <li><strong>뉴스 점수:</strong> {news_str}</li>
+      <li><strong>바이오 점수:</strong> {report.bio_score:.1f}</li>
+      <li><strong>공시 리스크:</strong> {escape(report.disclosure_risk_level.value)}</li>
+      <li><strong>특이사항:</strong> {"있음" if report.special_case else "없음"}</li>
+    </ul>
+  </section>
+  <section class="card evidence-panel" id="news-evidence">
+    <h2>뉴스 분석 근거</h2>
+    <ul>
+      <li><strong>뉴스 최종 점수:</strong> {news_str}</li>
+      <li><strong>키워드 점수:</strong> {_fmt_score(report.news_keyword_score)}</li>
+      <li><strong>LLM 점수:</strong> {_fmt_score(report.news_llm_score)}</li>
+      <li><strong>키워드 적중:</strong> {report.news_keyword_hits}</li>
+      <li><strong>긍정 키워드:</strong> {positive}</li>
+      <li><strong>부정 키워드:</strong> {negative}</li>
+      <li><strong>중대 부정 이벤트:</strong> {"감지됨" if report.news_negative_critical_event else "없음"}</li>
+      <li><strong>병합 가중치:</strong> {escape(report.news_merge_weights or "없음")}</li>
+      <li><strong>LLM 요약:</strong> {news_summary}</li>
+    </ul>
+  </section>
+  <section class="card evidence-panel" id="financial-evidence">
+    <h2>재무제표 분석 근거</h2>
+    <ul>
+      <li><strong>재무 점수:</strong> {report.financial_score:.1f}</li>
+      <li><strong>위험 요인:</strong> {financial_risks}</li>
+      <li><strong>공시 리스크 영향:</strong> {escape(report.disclosure_risk_level.value)}</li>
+    </ul>
+  </section>
+  <section class="card evidence-panel" id="bio-evidence"><h2>바이오 분석 근거</h2><p>{bio_summary}</p></section>
+  <section class="card">
+    <h2>공시 리스크 근거</h2>
+    <ul>
+      <li><strong>공시 리스크:</strong> {escape(report.disclosure_risk_level.value)}</li>
+      <li><strong>감지 키워드:</strong> {disclosure_keywords}</li>
+    </ul>
+  </section>
+  <section class="card"><h2>Report</h2><div class="report">{report_html}</div></section>
+</main>
+<script>
+  document.querySelectorAll('.metric-button').forEach((button) => {{
+    button.addEventListener('click', () => {{
+      const targetId = button.dataset.panel;
+      document.querySelectorAll('.metric-button').forEach((item) => item.classList.remove('active'));
+      document.querySelectorAll('.evidence-panel').forEach((panel) => panel.classList.remove('active'));
+      button.classList.add('active');
+      const target = document.getElementById(targetId);
+      if (target) {{
+        target.classList.add('active');
+        target.scrollIntoView({{ behavior: 'smooth', block: 'nearest' }});
+      }}
+    }});
+  }});
+</script>
 </body>
 </html>"""
     return HTMLResponse(content=html)
@@ -554,19 +684,31 @@ async def company_detail(company_id: str) -> HTMLResponse:
 
 @app.get("/api/companies")
 async def api_all_companies() -> JSONResponse:
-    return JSONResponse(
-        content=[r.model_dump() for r in _REPORTS.values()]
-    )
+    return JSONResponse(content=[report.model_dump() for report in _REPORTS.values()])
 
 
 @app.get("/api/companies/{company_id}")
 async def api_company(company_id: str) -> JSONResponse:
-    r = _REPORTS.get(company_id)
-    if not r:
-        raise HTTPException(status_code=404, detail=f"기업 ID '{company_id}'를 찾을 수 없습니다.")
-    return JSONResponse(content=r.model_dump())
+    report = _REPORTS.get(company_id)
+    if not report:
+        raise HTTPException(status_code=404, detail=f"Company ID '{company_id}' not found.")
+    return JSONResponse(content=report.model_dump())
+
+
+@app.get("/api/status")
+async def api_status() -> JSONResponse:
+    total = len(_COMPANIES) or int(os.getenv("KOSDAQ_TOP_LIMIT", "50"))
+    return JSONResponse(
+        content={
+            "analysis_started": _analysis_started,
+            "total_companies": total,
+            "completed": len(_REPORTS),
+            "company_ids": list(COMPANIES_BY_ID.keys()),
+        }
+    )
 
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=False)

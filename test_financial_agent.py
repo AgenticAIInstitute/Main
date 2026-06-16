@@ -1,4 +1,4 @@
-import sys; sys.stdout.reconfigure(encoding='utf-8')
+﻿import sys; sys.stdout.reconfigure(encoding='utf-8')
 from pprint import pprint
 
 # agents.financial_agent import
@@ -23,7 +23,7 @@ class MockFinancial:
     cash_runway_months: float = 15
 
 class MockCompanyData:
-    company_name: str = "적자바이오(가상)"
+    company_name: str = "?곸옄諛붿씠??媛??"
     financial: MockFinancial = MockFinancial()
     bio_domain: MockBioDomain = MockBioDomain()
 
@@ -33,33 +33,33 @@ class MockState:
 
 def run_tests():
     print("======================================================")
-    print("▶ 2번 Financial Agent 독립 시뮬레이션 테스트")
+    print("??2踰?Financial Agent ?낅┰ ?쒕??덉씠???뚯뒪??)
     print("======================================================")
-    
+
     state = MockState()
     agent = FinancialAgent()
-    
-    print("[입력된 재무 데이터 검증]")
+
+    print("[?낅젰???щТ ?곗씠??寃利?")
     fd = state.company_data.financial
-    print(f"1. 유동비율: {fd.current_ratio} (배점: 20점)")
-    print(f"2. 부채비율: {fd.debt_ratio}% (배점: 20점)")
-    print(f"3. 영업이익률: {fd.operating_profit_margin}% (배점: 2점 + 리스크 추가 안됨(R&D 높아서))")
-    print(f"4. 영업현금흐름: {fd.operating_cash_flow}억 (배점: 2점 + 리스크 추가)")
-    print(f"5. 현금성 자산: {fd.cash_assets}억 (배점: 6점)")
-    print(f"6. R&D 비용 비중: {fd.rd_expense_ratio}% (배점: 10점)")
-    print(f"7. Cash Runway: {fd.cash_runway_months}개월 (배점: 3점)")
+    print(f"1. ?좊룞鍮꾩쑉: {fd.current_ratio} (諛곗젏: 20??")
+    print(f"2. 遺梨꾨퉬?? {fd.debt_ratio}% (諛곗젏: 20??")
+    print(f"3. ?곸뾽?댁씡瑜? {fd.operating_profit_margin}% (諛곗젏: 2??+ 由ъ뒪??異붽? ?덈맖(R&D ?믪븘??)")
+    print(f"4. ?곸뾽?꾧툑?먮쫫: {fd.operating_cash_flow}??(諛곗젏: 2??+ 由ъ뒪??異붽?)")
+    print(f"5. ?꾧툑???먯궛: {fd.cash_assets}??(諛곗젏: 6??")
+    print(f"6. R&D 鍮꾩슜 鍮꾩쨷: {fd.rd_expense_ratio}% (諛곗젏: 10??")
+    print(f"7. Cash Runway: {fd.cash_runway_months}媛쒖썡 (諛곗젏: 3??")
     print("------------------------------------------------------")
-    print("=> Base Score 합산 예상치: 20 + 20 + 2 + 2 + 6 + 10 + 3 = 63.0 점")
-    print("=> Deficit-R&D Protection 가점 예상치: +5.0 점")
-    print("=> 최종 예상 점수: 68.0 점\n")
-    
+    print("=> Base Score ?⑹궛 ?덉긽移? 20 + 20 + 2 + 2 + 6 + 10 + 3 = 63.0 ??)
+    print("=> Deficit-R&D Protection 媛???덉긽移? +5.0 ??)
+    print("=> 理쒖쥌 ?덉긽 ?먯닔: 68.0 ??n")
+
     # Run Agent
     new_state = agent.run(state)
-    
-    print("[에이전트 산출 결과 (FinancialResult 객체)]")
+
+    print("[?먯씠?꾪듃 ?곗텧 寃곌낵 (FinancialResult 媛앹껜)]")
     res = new_state.financial_result
-    print(f"- 최종 점수(financial_score): {res.financial_score}")
-    print("- 도출된 리스크 요인(risk_factors):")
+    print(f"- 理쒖쥌 ?먯닔(financial_score): {res.financial_score}")
+    print("- ?꾩텧??由ъ뒪???붿씤(risk_factors):")
     for r in res.risk_factors:
         print(f"  * {r}")
 

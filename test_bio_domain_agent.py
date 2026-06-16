@@ -1,4 +1,4 @@
-import sys; sys.stdout.reconfigure(encoding='utf-8')
+﻿import sys; sys.stdout.reconfigure(encoding='utf-8')
 import os
 from pprint import pprint
 
@@ -12,8 +12,8 @@ class MockGeminiClient:
     def is_available(self):
         return True
     def generate(self, prompt):
-        print("====== [Gemini LLM 프롬프트 전달 내용 확인] ======\n" + prompt + "\n==================================================")
-        return "테스트바이오의 주요 파이프라인은 현재 임상 2상 진행 중이며, ClinicalTrials.gov에 등재되어 글로벌 투명성을 확보하고 있습니다. 더불어 FDA 희귀의약품 지정(ODD) 트랙을 준비 중이므로 글로벌 규제 기관 진출 가능성이 긍정적이나, 핵심 파이프라인 의존도가 55%로 다소 높은 점은 유의할 리스크입니다."
+        print("====== [Gemini LLM ?꾨＼?꾪듃 ?꾨떖 ?댁슜 ?뺤씤] ======\n" + prompt + "\n==================================================")
+        return "?뚯뒪?몃컮?댁삤??二쇱슂 ?뚯씠?꾨씪?몄? ?꾩옱 ?꾩긽 2??吏꾪뻾 以묒씠硫? ClinicalTrials.gov???깆옱?섏뼱 湲濡쒕쾶 ?щ챸?깆쓣 ?뺣낫?섍퀬 ?덉뒿?덈떎. ?붾텋??FDA ?ш??섏빟??吏??ODD) ?몃옓??以鍮?以묒씠誘濡?湲濡쒕쾶 洹쒖젣 湲곌? 吏꾩텧 媛?μ꽦??湲띿젙?곸씠?? ?듭떖 ?뚯씠?꾨씪???섏〈?꾧? 55%濡??ㅼ냼 ?믪? ?먯? ?좎쓽??由ъ뒪?ъ엯?덈떎."
 
 # Inject the mock to simulate LLM execution perfectly
 bda.get_gemini_client = lambda: MockGeminiClient()
@@ -27,7 +27,7 @@ class MockBioDomain:
     core_pipeline_dependency: float = 0.55
 
 class MockCompanyData:
-    company_name: str = "테스트바이오(가상)"
+    company_name: str = "?뚯뒪?몃컮?댁삤(媛??"
     bio_domain: MockBioDomain = MockBioDomain()
 
 class MockNewsResult:
@@ -43,34 +43,34 @@ class MockState:
 
 def run_tests():
     agent = BioDomainAgent()
-    
+
     print("======================================================")
-    print("▶ 시나리오 A: 정상/호재 케이스 (news_result 가 None인 경우)")
+    print("???쒕굹由ъ삤 A: ?뺤긽/?몄옱 耳?댁뒪 (news_result 媛 None??寃쎌슦)")
     print("======================================================")
     state_a = MockState(news_result=None)
     result_a = agent.run(state_a)
-    
+
     res_a = result_a.bio_domain_result
-    print(f"\n[시나리오 A 산출 결과]")
-    print(f"최종 바이오 점수: {res_a.bio_score}")
-    print(f"도출된 도메인 리스크: {res_a.domain_risks}")
+    print(f"\n[?쒕굹由ъ삤 A ?곗텧 寃곌낵]")
+    print(f"理쒖쥌 諛붿씠???먯닔: {res_a.bio_score}")
+    print(f"?꾩텧???꾨찓??由ъ뒪?? {res_a.domain_risks}")
     print("\n\n")
-    
+
     print("======================================================")
-    print("▶ 시나리오 B: 치명적 뉴스 페널티 케이스")
+    print("???쒕굹由ъ삤 B: 移섎챸???댁뒪 ?섎꼸??耳?댁뒪")
     print("======================================================")
-    # negative_critical_event=True, negative_keywords에 리스크 단어 포함
+    # negative_critical_event=True, negative_keywords??由ъ뒪???⑥뼱 ?ы븿
     news_res = MockNewsResult(
-        negative_critical_event=True, 
-        negative_keywords=["임상", "실패", "거절"]
+        negative_critical_event=True,
+        negative_keywords=["?꾩긽", "?ㅽ뙣", "嫄곗젅"]
     )
     state_b = MockState(news_result=news_res)
     result_b = agent.run(state_b)
-    
+
     res_b = result_b.bio_domain_result
-    print(f"\n[시나리오 B 산출 결과]")
-    print(f"최종 바이오 점수: {res_b.bio_score}")
-    print(f"도출된 도메인 리스크: {res_b.domain_risks}")
+    print(f"\n[?쒕굹由ъ삤 B ?곗텧 寃곌낵]")
+    print(f"理쒖쥌 諛붿씠???먯닔: {res_b.bio_score}")
+    print(f"?꾩텧???꾨찓??由ъ뒪?? {res_b.domain_risks}")
 
 if __name__ == "__main__":
     run_tests()

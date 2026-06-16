@@ -12,11 +12,13 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 from datetime import datetime
 from email.utils import parsedate_to_datetime
 from typing import Dict, List, Optional, Tuple
 
 import requests
+from models.schemas import NewsResult
 
 logger = logging.getLogger(__name__)
 
@@ -143,7 +145,7 @@ def _keyword_score(
         hits       : 키워드 히트 총 횟수
         detail     : 히트된 키워드 목록
     """
-    score = 70.0
+    score = 55.0
     hits  = 0
     detail: Dict = {
         "neg_high":  [],
@@ -192,8 +194,8 @@ def _keyword_score(
 def _llm_score(
     articles: List[Dict],
     company_name: str,
-    gemini_api_key: str,
-    gemini_model: str,
+    openai_api_key: str,
+    openai_model: str,
 ) -> Tuple[Optional[float], str]:
     """
     LLM 기반 맥락 분석 점수.
@@ -202,7 +204,7 @@ def _llm_score(
         score   : 0~100 또는 None (실패 시)
         summary : 분석 요약 문장
     """
-    if not articles or not gemini_api_key:
+    if not articles or not openai_api_key:
         return None, ""
 
     headlines = "\n".join(
@@ -223,15 +225,25 @@ def _llm_score(
     )
 
     try:
-        from langchain_google_genai import ChatGoogleGenerativeAI
+        from langchain_openai import ChatOpenAI
 
-        llm = ChatGoogleGenerativeAI(
-            model=gemini_model,
-            google_api_key=gemini_api_key,
+        llm = ChatOpenAI(
+            model=openai_model,
+            openai_api_key=openai_api_key,
             temperature=0.1,
+            streaming=True,
         )
-        result  = llm.invoke(prompt)
-        content = result.content.strip()
+
+        print(f"\n[News LLM Streaming] {company_name} analysis start", flush=True)
+        content_parts: List[str] = []
+        for chunk in llm.stream(prompt):
+            token = chunk.content or ""
+            if token:
+                print(token, end="", flush=True)
+                content_parts.append(token)
+        print(f"\n[News LLM Streaming] {company_name} analysis end\n", flush=True)
+
+        content = "".join(content_parts).strip()
 
         # ```json ... ``` 형식 대응
         if content.startswith("```"):
@@ -285,8 +297,8 @@ def _merge_scores(
 def calculate_news_score(
     articles: List[Dict],
     company_name: str,
-    gemini_api_key: str = "",
-    gemini_model: str   = "gemini-1.5-flash",
+    openai_api_key: str = "",
+    openai_model: str   = "gpt-5.4-mini",
 ) -> Tuple[float, Dict, str]:
     """
     전체 뉴스 점수 계산 파이프라인.
@@ -298,7 +310,7 @@ def calculate_news_score(
     """
     keyword_score, keyword_hits, detail = _keyword_score(articles)
     llm_score_val, llm_summary          = _llm_score(
-        articles, company_name, gemini_api_key, gemini_model
+        articles, company_name, openai_api_key, openai_model
     )
     final_score = _merge_scores(keyword_score, llm_score_val, keyword_hits)
 
@@ -328,10 +340,10 @@ def calculate_news_score(
 def news_node(state: dict) -> dict:
     """LangGraph 노드 — State에서 읽고 결과를 State에 저장."""
     company_name    = state["company_name"]
-    naver_id        = state.get("naver_client_id", "")
-    naver_secret    = state.get("naver_client_secret", "")
-    gemini_api_key  = state.get("gemini_api_key", "")
-    gemini_model    = state.get("gemini_model", "gemini-1.5-flash")
+    naver_id        = state.get("naver_client_id", "") or os.environ.get("NAVER_NEWS_API_Client_ID", "").strip()
+    naver_secret    = state.get("naver_client_secret", "") or os.environ.get("NAVER_NEWS_API_Client_Secret", "").strip()
+    openai_api_key  = state.get("openai_api_key", "") or os.environ.get("OPENAI_API_KEY", "")
+    openai_model    = state.get("openai_model", "") or os.environ.get("OPENAI_MODEL", "gpt-5.4-mini")
     errors          = list(state.get("errors", []))
 
     logger.info("[News] %s 분석 시작", company_name)
@@ -353,6 +365,18 @@ def news_node(state: dict) -> dict:
     if not news_data:
         logger.warning("[News] %s — 수집된 뉴스 없음", company_name)
         return {
+            "news_result":  NewsResult(
+                news_score=None,
+                positive_keywords=[],
+                negative_keywords=[],
+                negative_critical_event=False,
+                missing_news=True,
+                keyword_score=None,
+                keyword_hits=0,
+                llm_score=None,
+                llm_summary="",
+                merge_weights="",
+            ),
             "news_data":    [],
             "news_score":   None,   # SupervisoryReviewAgent가 news_data_missing으로 처리
             "news_detail":  {"article_count": 0},
@@ -362,10 +386,25 @@ def news_node(state: dict) -> dict:
 
     # ── 점수 계산 ─────────────────────────────
     final_score, detail, llm_summary = calculate_news_score(
-        news_data, company_name, gemini_api_key, gemini_model
+        news_data, company_name, openai_api_key, openai_model
+    )
+
+    negative_keywords = list({*detail.get("neg_high", []), *detail.get("neg_mid", [])})
+    news_result = NewsResult(
+        news_score=final_score,
+        positive_keywords=detail.get("positives", []),
+        negative_keywords=negative_keywords,
+        negative_critical_event=bool(detail.get("neg_high", [])),
+        missing_news=False,
+        keyword_score=detail.get("keyword_score"),
+        keyword_hits=detail.get("keyword_hits", 0),
+        llm_score=detail.get("llm_score"),
+        llm_summary=llm_summary,
+        merge_weights=detail.get("merge_weights", ""),
     )
 
     return {
+        "news_result":  news_result,
         "news_data":    news_data,
         "news_score":   final_score,
         "news_detail":  detail,

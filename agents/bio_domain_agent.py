@@ -1,116 +1,191 @@
 from __future__ import annotations
+
 import logging
+
+from data.company_aliases import aliases_for_company
 from models.schemas import BioAgentState, BioDomainResult
-from services.gemini_client import get_gemini_client
+from services.clinical_trials_client import STAGE_RANK, ClinicalTrialSummary, get_clinical_trials_client
+from services.patent_client import PatentSummary, get_patent_client
 
 logger = logging.getLogger(__name__)
 
 CLINICAL_STAGE_SCORE: dict[str, float] = {
     "Approved": 35.0,
-    "NDA": 30.0,
-    "Phase 3": 25.0,
-    "Phase 2": 15.0,
-    "Phase 1": 8.0,
+    "NDA": 32.0,
+    "Phase 3": 30.0,
+    "Phase 2": 22.0,
+    "Phase 1": 12.0,
     "Preclinical": 3.0,
 }
 
 
 class BioDomainAgent:
-    """임상단계·파이프라인·기술수출·특허·핵심의존도 및 뉴스 이벤트 기반 바이오 도메인 점수 산출."""
+    """Score bio domain strength from clinical-trial registration and patent data."""
 
     def run(self, state: BioAgentState) -> BioAgentState:
-        bd = state.company_data.bio_domain
-        company_name = state.company_data.company_name
+        company = state.company_data
+        company_name = company.company_name
+        fallback = company.bio_domain
         domain_risks: list[str] = []
+        aliases = aliases_for_company(company_name)
 
-        # 1. 임상 단계 (clinical_stage) - 35점 만점
-        stage_score = CLINICAL_STAGE_SCORE.get(bd.clinical_stage, 5.0)
+        clinical = get_clinical_trials_client().search_company(company_name, aliases=aliases)
+        patent = get_patent_client().search_company(company_name, aliases=aliases)
 
-        # 2. 파이프라인 개수 (pipeline_count) - 20점 만점
-        if bd.pipeline_count >= 7:
-            pipeline_score = 20.0
-        elif bd.pipeline_count >= 4:
-            pipeline_score = 14.0
-        elif bd.pipeline_count >= 2:
-            pipeline_score = 8.0
-        else:
-            pipeline_score = 3.0
-            domain_risks.append(f"파이프라인 부족 (보유 {bd.pipeline_count}개)")
+        clinical_stage = self._clinical_stage(clinical, fallback.clinical_stage)
+        trial_count = clinical.trial_count if clinical.source_available else fallback.pipeline_count
+        has_patent = self._has_patent(patent, fallback.has_patent)
 
-        # 3. 기술수출 여부 (has_tech_export) - 20점 만점
-        tech_export_score = 20.0 if bd.has_tech_export else 0.0
+        stage_score = CLINICAL_STAGE_SCORE.get(clinical_stage, 3.0)
+        trial_score = self._trial_score(trial_count)
+        status_score = self._status_score(clinical)
+        patent_score = self._patent_score(patent, has_patent)
 
-        # 4. 특허 여부 (has_patent) - 15점 만점
-        patent_score = 15.0 if bd.has_patent else 0.0
-        if not bd.has_patent:
-            domain_risks.append("보유 핵심 특허 없음")
+        if not clinical.source_available:
+            domain_risks.append("clinical_trial_source_unavailable")
+        elif clinical.trial_count == 0:
+            domain_risks.append("no_registered_clinical_trial")
 
-        # 5. 핵심 파이프라인 의존도 (core_pipeline_dependency) - 10점 만점
-        dep = bd.core_pipeline_dependency
-        if dep <= 0.40:
-            dep_score = 10.0
-        elif dep <= 0.60:
-            dep_score = 6.0
-        elif dep <= 0.75:
-            dep_score = 3.0
-        else:
-            dep_score = 0.0
-            domain_risks.append(f"핵심 파이프라인 높은 의존도 (의존도 {dep:.0%})")
+        if clinical.source_available and clinical.stopped_count > 0:
+            domain_risks.append(f"stopped_clinical_trials_detected:{clinical.stopped_count}")
 
-        # 기본 바이오 점수 계산
-        base_bio_score = stage_score + pipeline_score + tech_export_score + patent_score + dep_score
+        if not patent.source_available:
+            domain_risks.append(patent.message or "patent_source_unavailable")
+        elif patent.patent_count == 0:
+            domain_risks.append("no_patent_record_found")
 
-        # 🌟 뉴스 에이전트 분석 결과와의 상호 연동 (방어적 코드 설계 완료)
-        has_clinical_penalty = False
-        if state.news_result and getattr(state.news_result, "negative_critical_event", False):
-            # negative_keywords가 None일 경우를 대비해 안전장치 'or []' 추가
-            keywords_list = getattr(state.news_result, "negative_keywords", []) or []
-            critical_news_keywords = ["실패", "거절", "제재", "해지"]
-            
-            if any(k in "".join(keywords_list) for k in critical_news_keywords):
-                has_clinical_penalty = True
-                base_bio_score -= 15.0  # 임상 실패/인허가 거절 감점 적용
-                domain_risks.append("최신 뉴스 내 임상 실패/승인 거절 등 주요 리스크 확인")
-                logger.info(
-                    "[BioDomainAgent] %s | 임상 부정 뉴스 이벤트 감지로 바이오 점수 페널티 적용 (-15.0점)",
-                    company_name
-                )
-
-        bio_score = max(0.0, min(100.0, base_bio_score))
-
-        # Gemini LLM 바이오 도메인 분석 요약 (선택적 — API 가용 시만 실행)
-        try:
-            gemini = get_gemini_client()
-            if gemini.is_available():
-                prompt = (
-                    f"코스닥 바이오 기업 '{company_name}'의 바이오 도메인 분석 결과입니다.\n"
-                    f"- 바이오 점수: {bio_score:.1f}/100점\n"
-                    f"- 임상 단계: {bd.clinical_stage}\n"
-                    f"- 파이프라인 수: {bd.pipeline_count}개\n"
-                    f"- 기술수출 여부: {'있음' if bd.has_tech_export else '없음'}\n"
-                    f"- 핵심 특허 보유: {'있음' if bd.has_patent else '없음'}\n"
-                    f"- 핵심 파이프라인 의존도: {bd.core_pipeline_dependency:.0%}\n"
-                    f"- 도메인 리스크: {', '.join(domain_risks) if domain_risks else '없음'}\n\n"
-                    f"위 데이터를 바탕으로 여신 심사관 대출 심사 참고용으로 "
-                    f"이 기업의 바이오 기술 경쟁력과 상업화 리스크를 3~4문장으로 간결하게 한국어로 요약해주세요.\n"
-                    f"단, 다음 2가지 지침을 반드시 반영하여 심사의 신뢰도를 높여주세요:\n"
-                    f"1. 글로벌 투명성: LLM의 사전 지식을 바탕으로, 이 기업의 주력 파이프라인이 ClinicalTrials.gov 등 글로벌 임상 레지스트리 등재 여부나 주요 글로벌 학회 발표 이력이 있는지 가볍게 짚어줄 것.\n"
-                    f"2. 규제 기관 트랙: 단순히 파이프라인 개수를 넘어, FDA(패스트트랙, 희귀의약품 등)나 EMA 같은 글로벌 규제 기관 심사 트랙 진입 가능성이 있는지(또는 국내용에 치중되어 있는지) 정성적인 코멘트를 포함할 것."
-                )
-                llm_summary = gemini.generate(prompt)
-                if llm_summary:
-                    # 요약 데이터가 넘어왔음을 로그로 증명
-                    logger.info("[BioDomainAgent] %s | Gemini LLM 분석 완료", company_name)
-        except Exception as e:
-            logger.warning("[BioDomainAgent] Gemini 호출 실패 (무시): %s", e)
+        bio_score = max(0.0, min(100.0, stage_score + trial_score + status_score + patent_score))
+        summary = self._summary(clinical_stage, trial_count, clinical, patent, bio_score, aliases)
 
         state.bio_domain_result = BioDomainResult(
-            bio_score=round(bio_score, 2),
+            bio_domain_score=round(bio_score, 2),
             domain_risks=domain_risks,
+            summary=summary,
         )
 
         logger.info(
-            "[BioDomainAgent] %s | score=%.1f | risks=%s | 임상실패감점=%s",
-            company_name, bio_score, domain_risks, has_clinical_penalty
+            "[BioDomainAgent] %s | score=%.1f | stage=%s | trials=%s | patent_count=%s | risks=%s",
+            company_name,
+            bio_score,
+            clinical_stage,
+            trial_count,
+            patent.patent_count if patent.source_available else "N/A",
+            domain_risks,
         )
         return state
+
+    @staticmethod
+    def _clinical_stage(clinical: ClinicalTrialSummary, fallback_stage: str) -> str:
+        if clinical.source_available and clinical.trial_count > 0:
+            return clinical.highest_stage
+        if fallback_stage in STAGE_RANK:
+            return fallback_stage
+        return "Preclinical"
+
+    @staticmethod
+    def _has_patent(patent: PatentSummary, fallback_has_patent: bool) -> bool:
+        if patent.source_available:
+            return patent.patent_count > 0 or patent.registered_count > 0 or patent.applied_count > 0
+        return fallback_has_patent
+
+    @staticmethod
+    def _trial_score(trial_count: int) -> float:
+        if trial_count >= 7:
+            return 20.0
+        if trial_count >= 4:
+            return 16.0
+        if trial_count >= 2:
+            return 12.0
+        if trial_count == 1:
+            return 6.0
+        return 0.0
+
+    @staticmethod
+    def _status_score(clinical: ClinicalTrialSummary) -> float:
+        if not clinical.source_available:
+            return 0.0
+        score = 0.0
+        if clinical.active_count > 0:
+            score += 10.0
+        elif clinical.completed_count > 0:
+            score += 8.0
+
+        if clinical.stopped_count > 0:
+            score -= 15.0
+        return score
+
+    @staticmethod
+    def _patent_score(patent: PatentSummary, has_patent: bool) -> float:
+        if patent.source_available:
+            registered_score = BioDomainAgent._registered_patent_score(patent.registered_count)
+            if registered_score > 0:
+                return registered_score
+            return BioDomainAgent._applied_patent_score(max(patent.applied_count, patent.patent_count))
+        return 10.0 if has_patent else 0.0
+
+    @staticmethod
+    def _registered_patent_score(count: int) -> float:
+        if count >= 11:
+            return 25.0
+        if count >= 6:
+            return 20.0
+        if count >= 3:
+            return 15.0
+        if count >= 1:
+            return 10.0
+        return 0.0
+
+    @staticmethod
+    def _applied_patent_score(count: int) -> float:
+        if count >= 11:
+            return 15.0
+        if count >= 6:
+            return 12.0
+        if count >= 3:
+            return 8.0
+        if count >= 1:
+            return 5.0
+        return 0.0
+
+    @staticmethod
+    def _summary(
+        stage: str,
+        trial_count: int,
+        clinical: ClinicalTrialSummary,
+        patent: PatentSummary,
+        score: float,
+        aliases: list[str],
+    ) -> str:
+        clinical_source = (
+            "ClinicalTrials.gov"
+            if clinical.source_available and clinical.trial_count > 0
+            else "대체 데이터"
+        )
+        patent_source = "KIPRISPlus" if patent.source_available else "대체 데이터 또는 특허 데이터 사용 불가"
+        patent_count = str(patent.patent_count) if patent.source_available else "확인 불가"
+        matched_terms = ", ".join(patent.matched_terms or []) or "없음"
+        clinical_matched_terms = ", ".join(clinical.matched_terms or []) or "없음"
+        searched_terms = ", ".join(aliases[:8]) or "없음"
+        stage_label = BioDomainAgent._korean_stage(stage)
+        return (
+            f"바이오 도메인 점수는 {score:.1f}점입니다. "
+            f"임상 데이터 출처는 {clinical_source}이며, 확인된 최고 임상 단계는 {stage_label}입니다. "
+            f"임상시험은 총 {trial_count}건이고, 진행 중 {clinical.active_count}건, 완료 {clinical.completed_count}건, "
+            f"중단 {clinical.stopped_count}건으로 집계되었습니다. "
+            f"임상 검색에서 매칭된 용어는 {clinical_matched_terms}입니다. "
+            f"특허 데이터 출처는 {patent_source}이며, 확인된 특허 기록은 {patent_count}건입니다. "
+            f"특허 출원인 매칭 용어는 {matched_terms}입니다. "
+            f"검색에 사용한 회사명/별칭은 {searched_terms}입니다."
+        )
+
+    @staticmethod
+    def _korean_stage(stage: str) -> str:
+        labels = {
+            "Approved": "허가 완료",
+            "NDA": "허가 신청 단계",
+            "Phase 3": "임상 3상",
+            "Phase 2": "임상 2상",
+            "Phase 1": "임상 1상",
+            "Preclinical": "전임상",
+        }
+        return labels.get(stage, stage)
