@@ -1,15 +1,34 @@
 from __future__ import annotations
+
 import logging
+
 from models.schemas import BioAgentState, DisclosureResult, DisclosureRiskLevel
 
 logger = logging.getLogger(__name__)
 
-HIGH_RISK_KEYWORDS = {"관리종목", "계속기업 불확실성", "감사의견 한정", "최대주주 변경"}
-MEDIUM_RISK_KEYWORDS = {"유상증자 반복", "소송 계류"}
+HIGH_RISK_KEYWORDS = {
+    "관리종목",
+    "상장폐지",
+    "거래정지",
+    "감사의견 관련",
+    "감사의견 한정",
+    "감사의견 거절",
+    "계속기업 불확실성",
+    "횡령",
+    "배임",
+    "회생절차",
+    "불성실공시",
+    "영업정지",
+}
+MEDIUM_RISK_KEYWORDS = {
+    "유상증자 반복",
+    "최대주주 변경",
+    "소송",
+}
 
 
 class DisclosureAgent:
-    """공시 리스크 문구 분석 → LOW / MEDIUM / HIGH 판정."""
+    """Classify disclosure risk keywords into LOW / MEDIUM / HIGH."""
 
     def run(self, state: BioAgentState) -> BioAgentState:
         keywords = state.company_data.disclosure_data.risk_keywords
@@ -19,21 +38,17 @@ class DisclosureAgent:
         has_high = False
         has_medium = False
 
-        for kw in keywords:
-            if kw in HIGH_RISK_KEYWORDS:
-                detected.append(kw)
+        for keyword in keywords:
+            if keyword in HIGH_RISK_KEYWORDS:
                 has_high = True
-            elif kw in MEDIUM_RISK_KEYWORDS:
-                detected.append(kw)
+            elif keyword in MEDIUM_RISK_KEYWORDS:
                 has_medium = True
-            else:
-                detected.append(kw)
+            if keyword not in detected:
+                detected.append(keyword)
 
         if has_high:
             risk_level = DisclosureRiskLevel.HIGH
-        elif has_medium:
-            risk_level = DisclosureRiskLevel.MEDIUM
-        elif detected:
+        elif has_medium or detected:
             risk_level = DisclosureRiskLevel.MEDIUM
         else:
             risk_level = DisclosureRiskLevel.LOW
@@ -44,6 +59,8 @@ class DisclosureAgent:
         )
         logger.info(
             "[DisclosureAgent] %s | risk=%s | keywords=%s",
-            company_name, risk_level, detected,
+            company_name,
+            risk_level,
+            detected,
         )
         return state

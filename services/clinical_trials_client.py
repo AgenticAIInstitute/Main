@@ -28,6 +28,8 @@ class ClinicalTrialSummary:
     completed_count: int = 0
     stopped_count: int = 0
     statuses: list[str] | None = None
+    searched_terms: list[str] | None = None
+    matched_terms: list[str] | None = None
 
 
 class ClinicalTrialsClient:
@@ -35,23 +37,64 @@ class ClinicalTrialsClient:
         self._timeout = timeout
         self._base_url = "https://clinicaltrials.gov/api/v2/studies"
 
-    def search_company(self, company_name: str, page_size: int = 50) -> ClinicalTrialSummary:
+    def search_company(
+        self,
+        company_name: str,
+        aliases: list[str] | None = None,
+        page_size: int = 50,
+    ) -> ClinicalTrialSummary:
         if not company_name:
             return ClinicalTrialSummary(source_available=False)
 
+        searched_terms = self._search_terms(company_name, aliases)
+        all_studies: dict[str, dict] = {}
+        source_available = False
+        matched_terms: list[str] = []
+
+        for term in searched_terms:
+            studies = self._fetch_studies(term, page_size)
+            if studies is None:
+                continue
+            source_available = True
+            filtered = self._filter_related(studies, searched_terms)
+            if filtered:
+                matched_terms.append(term)
+            for study in filtered:
+                protocol = study.get("protocolSection", {})
+                identification = protocol.get("identificationModule", {})
+                key = (
+                    identification.get("nctId")
+                    or identification.get("orgStudyIdInfo", {}).get("id")
+                    or str(study)
+                )
+                all_studies[str(key)] = study
+
+        if not source_available:
+            return ClinicalTrialSummary(source_available=False, searched_terms=searched_terms)
+
+        return self._summarize(list(all_studies.values()), searched_terms, matched_terms)
+
+    def _fetch_studies(self, term: str, page_size: int) -> list[dict] | None:
         try:
             response = requests.get(
                 self._base_url,
-                params={"query.term": company_name, "pageSize": page_size, "format": "json"},
+                params={"query.term": term, "pageSize": page_size, "format": "json"},
                 timeout=self._timeout,
             )
             response.raise_for_status()
             payload = response.json()
         except Exception as exc:
-            logger.warning("[ClinicalTrials] search failed for %s: %s", company_name, exc)
-            return ClinicalTrialSummary(source_available=False)
+            logger.warning("[ClinicalTrials] search failed for %s: %s", term, exc)
+            return None
 
-        studies = payload.get("studies", [])
+        return payload.get("studies", []) or []
+
+    def _summarize(
+        self,
+        studies: list[dict],
+        searched_terms: list[str],
+        matched_terms: list[str],
+    ) -> ClinicalTrialSummary:
         statuses: list[str] = []
         highest_stage = "Preclinical"
         active_count = 0
@@ -85,7 +128,50 @@ class ClinicalTrialsClient:
             completed_count=completed_count,
             stopped_count=stopped_count,
             statuses=statuses,
+            searched_terms=searched_terms,
+            matched_terms=matched_terms,
         )
+
+    @staticmethod
+    def _search_terms(company_name: str, aliases: list[str] | None) -> list[str]:
+        values = [company_name, *(aliases or [])]
+        result: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            term = value.strip()
+            if not term:
+                continue
+            key = term.lower()
+            if key not in seen:
+                seen.add(key)
+                result.append(term)
+        return result
+
+    @staticmethod
+    def _filter_related(studies: list[dict], aliases: list[str]) -> list[dict]:
+        filtered: list[dict] = []
+        alias_terms = [alias.lower() for alias in aliases if len(alias.strip()) >= 3]
+        for study in studies:
+            haystack = ClinicalTrialsClient._study_match_text(study)
+            if any(term.lower() in haystack for term in alias_terms):
+                filtered.append(study)
+        return filtered
+
+    @staticmethod
+    def _study_match_text(study: dict) -> str:
+        protocol = study.get("protocolSection", {})
+        sponsor = protocol.get("sponsorCollaboratorsModule", {})
+        arms = protocol.get("armsInterventionsModule", {})
+        identification = protocol.get("identificationModule", {})
+        conditions = protocol.get("conditionsModule", {})
+        pieces = [
+            sponsor,
+            arms,
+            identification,
+            conditions,
+            protocol.get("descriptionModule", {}),
+        ]
+        return " ".join(str(piece).lower() for piece in pieces)
 
     @staticmethod
     def _stage_from_phases(phases: Any) -> str:

@@ -91,8 +91,8 @@ def _collect_industry_news(
 # ──────────────────────────────────────────────
 def _llm_analyze_industry(
     articles: List[Dict],
-    gemini_api_key: str,
-    gemini_model: str,
+    openai_api_key: str,
+    openai_model: str,
 ) -> Tuple[Optional[float], str, List[str], List[str]]:
     """
     LLM으로 바이오 산업 환경을 분석한다.
@@ -103,7 +103,7 @@ def _llm_analyze_industry(
         positive : 긍정 요인 목록
         negative : 부정 요인 목록
     """
-    if not articles or not gemini_api_key:
+    if not articles or not openai_api_key:
         return None, "", [], []
 
     headlines = "\n".join(
@@ -127,11 +127,11 @@ def _llm_analyze_industry(
     )
 
     try:
-        from langchain_google_genai import ChatGoogleGenerativeAI
+        from langchain_openai import ChatOpenAI
 
-        llm = ChatGoogleGenerativeAI(
-            model=gemini_model,
-            google_api_key=gemini_api_key,
+        llm = ChatOpenAI(
+            model=openai_model,
+            openai_api_key=openai_api_key,
             temperature=0.1,
         )
         result  = llm.invoke(prompt)
@@ -186,18 +186,26 @@ def _save_cache(
 def update_market_score(
     naver_client_id: str     = "",
     naver_client_secret: str = "",
-    gemini_api_key: str      = "",
-    gemini_model: str        = "gemini-1.5-flash",
+    openai_api_key: str      = "",
+    openai_model: str        = "gpt-5.4-mini",
 ) -> None:
     """
     바이오 산업 환경을 분석하고 캐시를 갱신한다.
     주 1회 스케줄러에서 자동 호출.
     """
     # 환경변수 fallback
-    naver_client_id     = naver_client_id     or os.getenv("NAVER_CLIENT_ID", "")
-    naver_client_secret = naver_client_secret or os.getenv("NAVER_CLIENT_SECRET", "")
-    gemini_api_key      = gemini_api_key      or os.getenv("GEMINI_API_KEY", "")
-    gemini_model        = gemini_model        or os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+    naver_client_id = (
+        naver_client_id
+        or os.getenv("NAVER_CLIENT_ID", "")
+        or os.getenv("NAVER_NEWS_API_Client_ID", "")
+    )
+    naver_client_secret = (
+        naver_client_secret
+        or os.getenv("NAVER_CLIENT_SECRET", "")
+        or os.getenv("NAVER_NEWS_API_Client_Secret", "")
+    )
+    openai_api_key      = openai_api_key      or os.getenv("OPENAI_API_KEY", "")
+    openai_model        = openai_model        or os.getenv("OPENAI_MODEL", "gpt-5.4-mini")
 
     logger.info("[Market] 산업 환경 분석 시작 — %s", datetime.now().isoformat())
 
@@ -211,7 +219,7 @@ def update_market_score(
 
     # 2) LLM 분석
     score, summary, positive, negative = _llm_analyze_industry(
-        articles, gemini_api_key, gemini_model
+        articles, openai_api_key, openai_model
     )
 
     if score is None:
