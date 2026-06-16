@@ -215,6 +215,7 @@ _REPORTS: dict[str, CompanyReport] = {}
 _COMPANIES = []
 COMPANIES_BY_ID = {}
 _analysis_started = False
+_analysis_task_generation = 0
 
 
 def analyze_company(company_data: Any) -> CompanyReport:
@@ -226,25 +227,32 @@ def analyze_company(company_data: Any) -> CompanyReport:
     return result.report
 
 
-def _run_all_analyses() -> None:
-    global _COMPANIES, COMPANIES_BY_ID
+def _run_all_analyses(generation: int) -> None:
+    global _COMPANIES, COMPANIES_BY_ID, _analysis_started, _analysis_task_generation
     _COMPANIES = load_companies()
     COMPANIES_BY_ID = build_companies_by_id(_COMPANIES)
     _REPORTS.clear()
 
     logger.info("KOSDAQ top company analysis started (%d companies)", len(_COMPANIES))
-    for company in _COMPANIES:
-        try:
-            report = analyze_company(company)
-            _REPORTS[company.company_id] = report
-            logger.info(
-                "analysis complete: %s -> %s (%s)",
-                company.company_name,
-                report.grade,
-                report.final_decision,
-            )
-        except Exception as exc:
-            logger.error("analysis failed [%s]: %s", company.company_id, exc)
+    try:
+        for company in _COMPANIES:
+            if generation != _analysis_task_generation:
+                logger.info("KOSDAQ analysis superseded by new run (%d/%d complete)", len(_REPORTS), len(_COMPANIES))
+                break
+            try:
+                report = analyze_company(company)
+                _REPORTS[company.company_id] = report
+                logger.info(
+                    "analysis complete: %s -> %s (%s)",
+                    company.company_name,
+                    report.grade,
+                    report.final_decision,
+                )
+            except Exception as exc:
+                logger.error("analysis failed [%s]: %s", company.company_id, exc)
+    finally:
+        if generation == _analysis_task_generation:
+            _analysis_started = False
 
 
 app = FastAPI(title="BioCredit Agent", version="1.0.0")
@@ -252,10 +260,15 @@ app = FastAPI(title="BioCredit Agent", version="1.0.0")
 
 @app.on_event("startup")
 async def startup_analyses() -> None:
-    global _analysis_started
-    if not _analysis_started:
-        _analysis_started = True
-        asyncio.create_task(asyncio.to_thread(_run_all_analyses))
+    logger.info("[Startup] server ready; analysis waits for the dashboard start button")
+
+
+def _start_analysis_task() -> bool:
+    global _analysis_started, _analysis_task_generation
+    _analysis_task_generation += 1
+    _analysis_started = True
+    asyncio.create_task(asyncio.to_thread(_run_all_analyses, _analysis_task_generation))
+    return True
 
 
 DECISION_COLOR = {
@@ -398,6 +411,10 @@ async def main_page() -> HTMLResponse:
   header {{ background:linear-gradient(135deg,#16345b 0%,#245c88 62%,#2d7c8f 100%); color:white; padding:28px 42px; box-shadow:0 3px 14px rgba(15,35,65,.18); }}
   header h1 {{ margin:0; font-size:1.9rem; letter-spacing:0; }}
   header p {{ margin:8px 0 0; opacity:.9; }}
+  .action-panel {{ position:fixed; top:18px; right:22px; z-index:20; display:flex; align-items:center; gap:10px; background:white; color:#253044; border:1px solid #dbe5ef; border-radius:8px; padding:10px 12px; box-shadow:0 8px 24px rgba(23,43,77,.14); }}
+  .action-panel span {{ font-size:.82rem; color:#607086; font-weight:700; }}
+  .start-btn {{ border:0; background:#245c88; color:white; border-radius:6px; padding:9px 13px; font-weight:800; cursor:pointer; }}
+  .start-btn:hover {{ background:#173f63; }}
   .container {{ max-width:none; margin:28px auto; padding:0 20px; }}
   .dashboard-grid {{ display:grid; grid-template-columns:minmax(0,1fr) 154px; gap:18px; align-items:start; transition:grid-template-columns .22s ease; }}
   .dashboard-grid.rejected-open {{ grid-template-columns:minmax(0,1fr) 410px; }}
@@ -445,6 +462,7 @@ async def main_page() -> HTMLResponse:
     .dashboard-grid, .dashboard-grid.rejected-open {{ display:block; }}
     .side-card {{ position:static; width:100%; margin-top:16px; }}
     .side-card.open {{ width:100%; }}
+    .action-panel {{ position:static; margin:16px 20px 0; justify-content:space-between; }}
   }}
   footer {{ text-align:center; color:#8da0b4; padding:22px; font-size:.8rem; }}
 </style>
@@ -454,6 +472,10 @@ async def main_page() -> HTMLResponse:
   <h1>BioCredit Agent</h1>
   <p>코스닥 상위 50개 기업 신용 분석 대시보드</p>
 </header>
+<div class="action-panel">
+  <span id="analysis-state">{"분석 중" if _analysis_started else "대기 중"}</span>
+  <button class="start-btn" id="start-analysis" type="button">분석 시작</button>
+</div>
 <div class="container">
   <div class="dashboard-grid" id="dashboard-grid">
     <div class="card">
@@ -535,19 +557,44 @@ async def main_page() -> HTMLResponse:
   }}
   const renderedCount = {len(reports)};
   const totalCompanies = {total_companies};
-  if (renderedCount < totalCompanies) {{
-    window.setTimeout(async () => {{
-      try {{
-        const response = await fetch('/api/status', {{ cache: 'no-store' }});
-        const status = await response.json();
-        if (status.completed > renderedCount) {{
-          window.location.reload();
-        }}
-      }} catch (error) {{
-        console.warn('status refresh failed', error);
+  const startButton = document.getElementById('start-analysis');
+  const analysisState = document.getElementById('analysis-state');
+  const applyAnalysisStatus = (status) => {{
+    const running = Boolean(status.analysis_started);
+    if (analysisState) {{
+      analysisState.textContent = running ? '분석 중' : '대기 중';
+    }}
+  }};
+  if (startButton) {{
+    startButton.addEventListener('click', async () => {{
+      if (analysisState) {{
+        analysisState.textContent = '분석 시작 중';
       }}
-    }}, 6000);
+      try {{
+        const response = await fetch('/api/start', {{ method: 'POST', cache: 'no-store' }});
+        const status = await response.json();
+        applyAnalysisStatus(status);
+        window.setTimeout(() => window.location.reload(), 1000);
+      }} catch (error) {{
+        if (analysisState) {{
+          analysisState.textContent = '시작 실패';
+        }}
+        console.warn('analysis start failed', error);
+      }}
+    }});
   }}
+  window.setInterval(async () => {{
+    try {{
+      const response = await fetch('/api/status', {{ cache: 'no-store' }});
+      const status = await response.json();
+      applyAnalysisStatus(status);
+      if (status.completed > renderedCount) {{
+        window.location.reload();
+      }}
+    }} catch (error) {{
+      console.warn('status refresh failed', error);
+    }}
+  }}, 3000);
 </script>
 </body>
 </html>'''
@@ -693,6 +740,19 @@ async def api_company(company_id: str) -> JSONResponse:
     if not report:
         raise HTTPException(status_code=404, detail=f"Company ID '{company_id}' not found.")
     return JSONResponse(content=report.model_dump())
+
+
+@app.post("/api/start")
+async def api_start_analysis() -> JSONResponse:
+    _start_analysis_task()
+    total = len(_COMPANIES) or int(os.getenv("KOSDAQ_TOP_LIMIT", "50"))
+    return JSONResponse(
+        content={
+            "analysis_started": _analysis_started,
+            "total_companies": total,
+            "completed": len(_REPORTS),
+        }
+    )
 
 
 @app.get("/api/status")
