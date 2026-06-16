@@ -7,3 +7,4 @@ langchain-openai>=0.1.0
 langgraph>=0.1.0
 requests
 FinanceDataReader>=0.9.90
+pykrx>=1.0.48

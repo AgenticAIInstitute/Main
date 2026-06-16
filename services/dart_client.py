@@ -38,6 +38,14 @@ class DartClient:
     def available(self) -> bool:
         return bool(self._api_key)
 
+    def get_financial_data(
+        self,
+        ticker_code: str,
+        fallback_data: FinancialData | None = None,
+    ) -> FinancialData | None:
+        company_data = self.get_company_data(ticker_code)
+        return company_data.financial or fallback_data
+
     def get_company_data(self, ticker_code: str) -> DartCompanyData:
         corp_code = self.get_corp_code(ticker_code)
         if not corp_code:
