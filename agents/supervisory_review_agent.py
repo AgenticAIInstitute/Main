@@ -74,7 +74,7 @@ def _detect_special_cases(state: dict) -> List[str]:
 
     financial_score  = state.get("financial_score")
     news_score       = state.get("news_score")
-    bio_score        = state.get("bio_score")
+    bio_score        = state.get("bio_domain_score", state.get("bio_score"))
     disclosure_score = state.get("disclosure_score")
     news_detail      = state.get("news_detail", {})
 
@@ -133,8 +133,8 @@ def _llm_judge(
     state: dict,
     current_grade: str,
     special_cases: List[str],
-    gemini_api_key: str,
-    gemini_model: str,
+    openai_api_key: str,
+    openai_model: str,
 ) -> Tuple[Optional[str], str]:
     """
     LLM에게 등급 조정 여부를 판단하게 한다.
@@ -148,7 +148,7 @@ def _llm_judge(
     scores_text = (
         f"재무 점수: {state.get('financial_score', 'N/A')}\n"
         f"뉴스 점수: {state.get('news_score', 'N/A')}\n"
-        f"바이오 점수: {state.get('bio_score', 'N/A')}\n"
+        f"바이오 점수: {state.get('bio_domain_score', state.get('bio_score', 'N/A'))}\n"
         f"공시 점수: {state.get('disclosure_score', 'N/A')}"
     )
 
@@ -180,13 +180,12 @@ def _llm_judge(
     )
 
     try:
-        from langchain_google_genai import ChatGoogleGenerativeAI
+        from langchain_openai import ChatOpenAI
 
-        llm = ChatGoogleGenerativeAI(
-            model=gemini_model,
-            google_api_key=gemini_api_key,
+        llm = ChatOpenAI(
+            model=openai_model,
+            openai_api_key=openai_api_key,
             temperature=0.1,
-           
         )
         result  = llm.invoke(prompt)
         content = result.content.strip()
@@ -214,8 +213,8 @@ def _llm_judge_with_retry(
     state: dict,
     current_grade: str,
     special_cases: List[str],
-    gemini_api_key: str,
-    gemini_model: str,
+    openai_api_key: str,
+    openai_model: str,
     errors: List[str],
 ) -> Tuple[Optional[str], str, bool]:
     """
@@ -230,7 +229,7 @@ def _llm_judge_with_retry(
 
     for retry in range(1, MAX_RETRY + 1):
         adjusted_grade, reason = _llm_judge(
-            state, current_grade, special_cases, gemini_api_key, gemini_model
+            state, current_grade, special_cases, openai_api_key, openai_model
         )
 
         # LLM 호출 자체 실패
@@ -303,8 +302,8 @@ def _needs_human_review(
 def supervisory_review_node(state: dict) -> dict:
     """LangGraph 노드 — B/C 등급만 처리하고 나머지는 패스."""
     current_grade  = state.get("loan_grade", "")
-    gemini_api_key = state.get("gemini_api_key", "") or os.environ.get("GEMINI_API_KEY", "") or os.environ.get("GOOGLE_API_KEY", "")
-    gemini_model   = state.get("gemini_model", "") or os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
+    openai_api_key = state.get("openai_api_key", "") or os.environ.get("OPENAI_API_KEY", "")
+    openai_model   = state.get("openai_model", "") or os.environ.get("OPENAI_MODEL", "gpt-5.4-mini")
     company_name   = state.get("company_name", "")
     errors         = list(state.get("errors", []))
 
@@ -352,7 +351,7 @@ def supervisory_review_node(state: dict) -> dict:
     # ── special_case 있는 경우 → LLM 판단 (재시도 포함) ───
     adjusted_grade, reason, is_error = _llm_judge_with_retry(
         state, current_grade, special_cases,
-        gemini_api_key, gemini_model, errors,
+        openai_api_key, openai_model, errors,
     )
 
     # 오류 발생 시 → 재시작 또는 Human Review 강제 전달

@@ -13,7 +13,7 @@ import logging
 from models.schemas import (
     BioAgentState, CompanyReport, GradeEnum, DisclosureRiskLevel, FinalDecision
 )
-from services.gemini_client import get_gemini_client
+from services.openai_client import get_openai_client
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +25,7 @@ DECISION_LABEL = {
 
 
 class ReportWriterAgent:
-    """각 기업별 최종 보고서 생성. Gemini 사용 가능 시 자연어 보고서 생성."""
+    """각 기업별 최종 보고서 생성. OpenAI 사용 가능 시 자연어 보고서 생성."""
 
     def run(self, state: BioAgentState) -> BioAgentState:
         company = state.company_data
@@ -38,8 +38,15 @@ class ReportWriterAgent:
         # ── 각 결과 추출 ──────────────────────────
         grade           = rsr.grade        if rsr else GradeEnum.E
         final_score     = rsr.final_score  if rsr else 0.0
-        fin_score       = rsr.score_breakdown.get("financial_score", 0.0) if rsr else 0.0
-        bio_score       = rsr.score_breakdown.get("bio_score", 0.0)       if rsr else 0.0
+        fin_score       = state.financial_result.financial_score if state.financial_result else 0.0
+        risk_factors    = state.financial_result.risk_factors if state.financial_result else []
+        bio_domain_score = (
+            state.bio_domain_result.bio_domain_score
+            if state.bio_domain_result
+            else (rsr.score_breakdown.get("bio_domain_score", 0.0) if rsr else 0.0)
+        )
+        domain_risks    = state.bio_domain_result.domain_risks if state.bio_domain_result else []
+        bio_summary     = state.bio_domain_result.summary if state.bio_domain_result else ""
         news_score      = nr.news_score    if nr  else None
         disc_level      = dr.disclosure_risk_level if dr else DisclosureRiskLevel.MEDIUM
         decision        = ldr.final_decision  if ldr else FinalDecision.REJECTED
@@ -61,8 +68,11 @@ class ReportWriterAgent:
             "grade":              grade,
             "final_score":        final_score,
             "fin_score":          fin_score,
+            "risk_factors":       risk_factors,
             "news_score":         news_score,
-            "bio_score":          bio_score,
+            "bio_domain_score":   bio_domain_score,
+            "domain_risks":       domain_risks,
+            "bio_summary":        bio_summary,
             "disc_level":         disc_level,
             "original_grade":     original_grade,
             "adjusted_grade":     adjusted_grade,
@@ -83,13 +93,25 @@ class ReportWriterAgent:
             final_score          = final_score,
             financial_score      = round(fin_score, 2),
             news_score           = round(news_score, 2) if news_score is not None else None,
-            bio_score            = round(bio_score, 2),
+            bio_score            = round(bio_domain_score, 2),
             disclosure_risk_level= disc_level,
             special_case         = llm_called,
             special_case_reason  = supervisory_reason,
             final_decision       = decision,
             decision_reason      = decision_reason,
             report_text          = report_text,
+            financial_risk_factors= risk_factors,
+            news_positive_keywords= nr.positive_keywords if nr else [],
+            news_negative_keywords= nr.negative_keywords if nr else [],
+            news_negative_critical_event= nr.negative_critical_event if nr else False,
+            news_keyword_score= nr.keyword_score if nr else None,
+            news_keyword_hits= nr.keyword_hits if nr else 0,
+            news_llm_score= nr.llm_score if nr else None,
+            news_llm_summary= nr.llm_summary if nr else "",
+            news_merge_weights= nr.merge_weights if nr else "",
+            bio_domain_risks     = domain_risks,
+            bio_domain_summary   = bio_summary,
+            disclosure_detected_keywords= dr.detected_keywords if dr else [],
         )
 
         logger.info(
@@ -99,14 +121,17 @@ class ReportWriterAgent:
         return state
 
     def _build_report(self, data: dict) -> str:
-        """보고서 생성 — Gemini 가용 시 자연어, 불가 시 템플릿."""
+        """보고서 생성 — OpenAI 가용 시 자연어, 불가 시 템플릿."""
 
         name               = data["name"]
         grade              = data["grade"]
         final_score        = data["final_score"]
         fin_score          = data["fin_score"]
+        risk_factors       = data["risk_factors"]
         news_score         = data["news_score"]
-        bio_score          = data["bio_score"]
+        bio_domain_score   = data["bio_domain_score"]
+        domain_risks       = data["domain_risks"]
+        bio_summary        = data["bio_summary"]
         disc_level         = data["disc_level"]
         original_grade     = data["original_grade"]
         adjusted_grade     = data["adjusted_grade"]
@@ -143,8 +168,11 @@ class ReportWriterAgent:
             f"등급 조정       : {grade_change_str}\n"
             f"최종 점수       : {final_score:.2f}점\n"
             f"재무 점수       : {fin_score:.1f}점\n"
+            f"재무 리스크     : {', '.join(risk_factors) if risk_factors else '없음'}\n"
             f"뉴스 점수       : {news_str}\n"
-            f"바이오 점수     : {bio_score:.1f}점\n"
+            f"바이오 점수     : {bio_domain_score:.1f}점\n"
+            f"바이오 리스크   : {', '.join(domain_risks) if domain_risks else '없음'}\n"
+            f"바이오 요약     : {bio_summary or '없음'}\n"
             f"공시 리스크     : {disc_level.value}\n"
             f"특이사항 검토   : {'있음' if llm_called else '없음'}\n"
             f"특이사항 사유   : {supervisory_reason or '해당 없음'}\n"
@@ -154,9 +182,9 @@ class ReportWriterAgent:
             f"판단 근거       : {decision_reason}\n"
         )
 
-        # ── Gemini 자연어 보고서 ──────────────────
-        gemini = get_gemini_client()
-        if not gemini.is_available():
+        # ── OpenAI 자연어 보고서 ──────────────────
+        openai = get_openai_client()
+        if not openai.is_available():
             return template
 
         prompt = (
@@ -165,7 +193,10 @@ class ReportWriterAgent:
             f"기업명: {name}\n"
             f"최초 등급: {original_grade or grade.value}등급 → 최종 등급: {grade.value}등급\n"
             f"최종 점수: {final_score:.2f}점\n"
-            f"재무 점수: {fin_score:.1f}점 | 뉴스 점수: {news_str} | 바이오 점수: {bio_score:.1f}점\n"
+            f"재무 점수: {fin_score:.1f}점 | 뉴스 점수: {news_str} | 바이오 점수: {bio_domain_score:.1f}점\n"
+            f"재무 리스크: {', '.join(risk_factors) if risk_factors else '없음'}\n"
+            f"바이오 리스크: {', '.join(domain_risks) if domain_risks else '없음'}\n"
+            f"바이오 요약: {bio_summary or '없음'}\n"
             f"공시 리스크: {disc_level.value}\n"
             f"등급 조정 사유: {supervisory_reason or '조정 없음'}\n"
             f"재시작 이력: {restart_str}\n"
@@ -177,7 +208,7 @@ class ReportWriterAgent:
             f"재시작 이력이나 오류가 있으면 신뢰도 한계를 명시하세요."
         )
 
-        ai_text = gemini.generate(prompt)
+        ai_text = openai.generate(prompt)
         if ai_text:
             return (
                 f"■ {name} 여신심사 최종 보고서\n"

@@ -12,7 +12,7 @@ class DisclosureAgent:
     """공시 리스크 문구 분석 → LOW / MEDIUM / HIGH 판정."""
 
     def run(self, state: BioAgentState) -> BioAgentState:
-        keywords = state.company_data.disclosure.risk_keywords
+        keywords = state.company_data.disclosure_data.risk_keywords
         company_name = state.company_data.company_name
 
         detected: list[str] = []

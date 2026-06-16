@@ -15,8 +15,8 @@
 절대 초기화하면 안 되는 항목:
   - restart_count  : 재시작 횟수 카운터 (무한루프 방지)
   - company_data   : 재분석에 필요한 입력값
-  - gemini_api_key : 재분석에 필요한 API 키
-  - gemini_model   : 재분석에 필요한 모델 설정
+  - openai_api_key : 재분석에 필요한 API 키
+  - openai_model   : 재분석에 필요한 모델 설정
 """
 from __future__ import annotations
 
@@ -101,7 +101,7 @@ def planner_node(state: dict) -> dict:
         missing.append("financial_data")
     if not company.bio_domain:
         missing.append("bio_domain_data")
-    if not company.disclosure:
+    if not company.disclosure_data:
         missing.append("disclosure_data")
 
     if missing:

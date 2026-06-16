@@ -1,88 +1,144 @@
 from __future__ import annotations
+
 import logging
+
 from models.schemas import BioAgentState, BioDomainResult
+from services.clinical_trials_client import STAGE_RANK, ClinicalTrialSummary, get_clinical_trials_client
+from services.patent_client import PatentSummary, get_patent_client
 
 logger = logging.getLogger(__name__)
 
 CLINICAL_STAGE_SCORE: dict[str, float] = {
     "Approved": 35.0,
-    "NDA": 30.0,
-    "Phase 3": 25.0,
-    "Phase 2": 15.0,
-    "Phase 1": 8.0,
+    "NDA": 32.0,
+    "Phase 3": 30.0,
+    "Phase 2": 22.0,
+    "Phase 1": 12.0,
     "Preclinical": 3.0,
 }
 
 
 class BioDomainAgent:
-    """임상단계·파이프라인·기술수출·특허·핵심의존도 및 뉴스 이벤트 기반 바이오 도메인 점수 산출."""
+    """Score bio domain strength from clinical-trial registration and patent data."""
 
     def run(self, state: BioAgentState) -> BioAgentState:
-        bd = state.company_data.bio_domain
-        company_name = state.company_data.company_name
+        company = state.company_data
+        company_name = company.company_name
+        fallback = company.bio_domain
         domain_risks: list[str] = []
 
-        # 1. 임상 단계 (clinical_stage) - 35점 만점
-        stage_score = CLINICAL_STAGE_SCORE.get(bd.clinical_stage, 5.0)
+        clinical = get_clinical_trials_client().search_company(company_name)
+        patent = get_patent_client().search_company(company_name)
 
-        # 2. 파이프라인 개수 (pipeline_count) - 20점 만점
-        if bd.pipeline_count >= 7:
-            pipeline_score = 20.0
-        elif bd.pipeline_count >= 4:
-            pipeline_score = 14.0
-        elif bd.pipeline_count >= 2:
-            pipeline_score = 8.0
-        else:
-            pipeline_score = 3.0
-            domain_risks.append(f"파이프라인 부족 (보유 {bd.pipeline_count}개)")
+        clinical_stage = self._clinical_stage(clinical, fallback.clinical_stage)
+        trial_count = clinical.trial_count if clinical.source_available else fallback.pipeline_count
+        has_patent = self._has_patent(patent, fallback.has_patent)
 
-        # 3. 기술수출 여부 (has_tech_export) - 20점 만점
-        tech_export_score = 20.0 if bd.has_tech_export else 0.0
+        stage_score = CLINICAL_STAGE_SCORE.get(clinical_stage, 3.0)
+        trial_score = self._trial_score(trial_count)
+        status_score = self._status_score(clinical)
+        patent_score = self._patent_score(patent, has_patent)
 
-        # 4. 특허 여부 (has_patent) - 15점 만점
-        patent_score = 15.0 if bd.has_patent else 0.0
-        if not bd.has_patent:
-            domain_risks.append("보유 핵심 특허 없음")
+        if not clinical.source_available:
+            domain_risks.append("clinical_trial_source_unavailable")
+        elif clinical.trial_count == 0:
+            domain_risks.append("no_registered_clinical_trial")
 
-        # 5. 핵심 파이프라인 의존도 (core_pipeline_dependency) - 10점 만점
-        dep = bd.core_pipeline_dependency
-        if dep <= 0.40:
-            dep_score = 10.0
-        elif dep <= 0.60:
-            dep_score = 6.0
-        elif dep <= 0.75:
-            dep_score = 3.0
-        else:
-            dep_score = 0.0
-            domain_risks.append(f"핵심 파이프라인 높은 의존도 (의존도 {dep:.0%})")
+        if clinical.source_available and clinical.stopped_count > 0:
+            domain_risks.append(f"stopped_clinical_trials_detected:{clinical.stopped_count}")
 
-        # 기본 바이오 점수 계산
-        base_bio_score = stage_score + pipeline_score + tech_export_score + patent_score + dep_score
+        if not patent.source_available:
+            domain_risks.append(patent.message or "patent_source_unavailable")
+        elif patent.patent_count == 0:
+            domain_risks.append("no_patent_record_found")
 
-        # 🌟 뉴스 에이전트 분석 결과와의 상호 연동 (Agentic Cross-Collaboration)
-        # 만약 임상 실패, 승인 거절 등 뉴스 에이전트에서 치명적인 임상 부정 이벤트를 감지했다면 바이오 점수에서도 강력 감점
-        has_clinical_penalty = False
-        if state.news_result and state.news_result.negative_critical_event:
-            # 부정 키워드 중 임상/인허가 실패 관련 단어 확인
-            critical_news_keywords = ["실패", "거절", "제재", "해지"]
-            if any(k in "".join(state.news_result.negative_keywords) for k in critical_news_keywords):
-                has_clinical_penalty = True
-                base_bio_score -= 15.0  # 임상 실패/인허가 거절 감점 적용
-                domain_risks.append("최신 뉴스 내 임상 실패/승인 거절 등 주요 리스크 확인")
-                logger.info(
-                    "[BioDomainAgent] %s | 임상 부정 뉴스 이벤트 감지로 바이오 점수 페널티 적용 (-15.0점)",
-                    company_name
-                )
-
-        bio_score = max(0.0, min(100.0, base_bio_score))
+        bio_score = max(0.0, min(100.0, stage_score + trial_score + status_score + patent_score))
+        summary = self._summary(clinical_stage, trial_count, clinical, patent, bio_score)
 
         state.bio_domain_result = BioDomainResult(
-            bio_score=round(bio_score, 2),
+            bio_domain_score=round(bio_score, 2),
             domain_risks=domain_risks,
+            summary=summary,
         )
 
         logger.info(
-            "[BioDomainAgent] %s | score=%.1f | risks=%s | 임상실패감점=%s",
-            company_name, bio_score, domain_risks, has_clinical_penalty
+            "[BioDomainAgent] %s | score=%.1f | stage=%s | trials=%s | patent_count=%s | risks=%s",
+            company_name,
+            bio_score,
+            clinical_stage,
+            trial_count,
+            patent.patent_count if patent.source_available else "N/A",
+            domain_risks,
         )
         return state
+
+    @staticmethod
+    def _clinical_stage(clinical: ClinicalTrialSummary, fallback_stage: str) -> str:
+        if clinical.source_available and clinical.trial_count > 0:
+            return clinical.highest_stage
+        if fallback_stage in STAGE_RANK:
+            return fallback_stage
+        return "Preclinical"
+
+    @staticmethod
+    def _has_patent(patent: PatentSummary, fallback_has_patent: bool) -> bool:
+        if patent.source_available:
+            return patent.patent_count > 0 or patent.registered_count > 0 or patent.applied_count > 0
+        return fallback_has_patent
+
+    @staticmethod
+    def _trial_score(trial_count: int) -> float:
+        if trial_count >= 5:
+            return 20.0
+        if trial_count >= 2:
+            return 12.0
+        if trial_count == 1:
+            return 6.0
+        return 0.0
+
+    @staticmethod
+    def _status_score(clinical: ClinicalTrialSummary) -> float:
+        if not clinical.source_available:
+            return 5.0
+        score = 0.0
+        if clinical.active_count > 0:
+            score += 10.0
+        elif clinical.completed_count > 0:
+            score += 8.0
+
+        if clinical.stopped_count > 0:
+            score -= 15.0
+        return score
+
+    @staticmethod
+    def _patent_score(patent: PatentSummary, has_patent: bool) -> float:
+        if patent.source_available:
+            if patent.registered_count > 0:
+                return 25.0
+            if patent.patent_count > 0 or patent.applied_count > 0:
+                return 15.0
+            return 0.0
+        return 15.0 if has_patent else 0.0
+
+    @staticmethod
+    def _summary(
+        stage: str,
+        trial_count: int,
+        clinical: ClinicalTrialSummary,
+        patent: PatentSummary,
+        score: float,
+    ) -> str:
+        clinical_source = (
+            "ClinicalTrials.gov"
+            if clinical.source_available and clinical.trial_count > 0
+            else "fallback data"
+        )
+        patent_source = "KIPRISPlus" if patent.source_available else "fallback/unavailable patent data"
+        patent_count = patent.patent_count if patent.source_available else "N/A"
+        matched_terms = ", ".join(patent.matched_terms or []) or "none"
+        return (
+            f"Bio domain score {score:.1f}. "
+            f"Clinical source: {clinical_source}; highest stage: {stage}; trials: {trial_count}; "
+            f"active: {clinical.active_count}; completed: {clinical.completed_count}; stopped: {clinical.stopped_count}. "
+            f"Patent source: {patent_source}; patent records: {patent_count}; matched applicants: {matched_terms}."
+        )

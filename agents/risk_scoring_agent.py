@@ -40,7 +40,11 @@ class RiskScoringAgent:
         company_name = state.company_data.company_name
 
         fin_score = state.financial_result.financial_score if state.financial_result else 0.0
-        bio_score = state.bio_domain_result.bio_score if state.bio_domain_result else 0.0
+        bio_domain_score = (
+            state.bio_domain_result.bio_domain_score
+            if state.bio_domain_result
+            else 0.0
+        )
         disc_level = (
             state.disclosure_result.disclosure_risk_level
             if state.disclosure_result
@@ -56,7 +60,7 @@ class RiskScoringAgent:
         final_score = (
             WEIGHT_FINANCIAL * fin_score
             + WEIGHT_NEWS * news_effective
-            + WEIGHT_BIO * bio_score
+            + WEIGHT_BIO * bio_domain_score
             + WEIGHT_DISCLOSURE * disc_score
         )
         final_score = round(final_score, 2)
@@ -70,7 +74,7 @@ class RiskScoringAgent:
                 "financial_score": fin_score,
                 "news_score_effective": news_effective,
                 "news_score_raw": news_raw,
-                "bio_score": bio_score,
+                "bio_domain_score": bio_domain_score,
                 "disclosure_score": disc_score,
                 "weights": {
                     "financial": WEIGHT_FINANCIAL,
