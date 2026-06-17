@@ -233,11 +233,11 @@ def _run_all_analyses(generation: int) -> None:
     COMPANIES_BY_ID = build_companies_by_id(_COMPANIES)
     _REPORTS.clear()
 
-    logger.info("KOSDAQ top company analysis started (%d companies)", len(_COMPANIES))
+    logger.info("KOSDAQ bio top company analysis started (%d companies)", len(_COMPANIES))
     try:
         for company in _COMPANIES:
             if generation != _analysis_task_generation:
-                logger.info("KOSDAQ analysis superseded by new run (%d/%d complete)", len(_REPORTS), len(_COMPANIES))
+                logger.info("KOSDAQ bio analysis superseded by new run (%d/%d complete)", len(_REPORTS), len(_COMPANIES))
                 break
             try:
                 report = analyze_company(company)
@@ -404,7 +404,7 @@ async def main_page() -> HTMLResponse:
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>BioCredit Agent - KOSDAQ Top 50</title>
+<title>BioCredit Agent - KOSDAQ Bio Top 50</title>
 <style>
   * {{ box-sizing: border-box; }}
   body {{ margin:0; font-family:'Segoe UI', Arial, sans-serif; background:#eef3f8; color:#253044; }}
@@ -470,7 +470,7 @@ async def main_page() -> HTMLResponse:
 <body>
 <header>
   <h1>BioCredit Agent</h1>
-  <p>코스닥 상위 50개 기업 신용 분석 대시보드</p>
+  <p>코스닥 바이오·제약 관련 업종 시가총액 상위 50개 기업 신용 분석 대시보드</p>
 </header>
 <div class="action-panel">
   <span id="analysis-state">{"분석 중" if _analysis_started else "대기 중"}</span>
@@ -520,7 +520,7 @@ async def main_page() -> HTMLResponse:
   </div>
   <div id="news-panels">{panels}</div>
 </div>
-<footer>BioCredit Agent v1.0 · KOSDAQ Top 50 · FastAPI</footer>
+<footer>BioCredit Agent v1.0 · KOSDAQ Bio Top 50 · FastAPI</footer>
 <script>
   document.querySelectorAll('.score-btn').forEach((button) => {{
     button.addEventListener('click', () => {{

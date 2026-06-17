@@ -12,9 +12,9 @@ logger = logging.getLogger(__name__)
 
 def load_companies(limit: int | None = None) -> list[CompanyData]:
     limit = limit or int(os.getenv("KOSDAQ_TOP_LIMIT", "50"))
-    market_companies = get_market_client().get_kosdaq_top_by_market_cap(limit=limit)
+    market_companies = get_market_client().get_kosdaq_bio_top_by_market_cap(limit=limit)
     companies = [_to_company_data(item) for item in market_companies]
-    logger.info("[CompanyLoader] loaded %d KOSDAQ companies", len(companies))
+    logger.info("[CompanyLoader] loaded %d KOSDAQ bio companies", len(companies))
     return companies
 
 
